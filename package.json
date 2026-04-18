@@ -1,0 +1,21 @@
+{
+  "name": "soundspace",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:osc": "node server.js",
+    "build": "vite build",
+    "start": "vite build && node server.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "three": "^0.175.0",
+    "tone": "^15.1.22",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.0"
+  }
+}

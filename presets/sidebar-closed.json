@@ -1,0 +1,92 @@
+{
+  "scale": {
+    "root": "C",
+    "scaleType": "pentatonic_major",
+    "octaveLow": 3,
+    "octaveHigh": 6,
+    "mappingMode": "linear",
+    "customDegrees": null
+  },
+  "synth": {
+    "synthType": "MonoSynth",
+    "noteDuration": "2n",
+    "velocityScale": 0.8,
+    "synthOptions": {
+      "oscillator": {
+        "type": "triangle"
+      },
+      "envelope": {
+        "attack": 0.005,
+        "decay": 0.41,
+        "sustain": 0.1,
+        "release": 0.8
+      }
+    },
+    "effects": [
+      {
+        "type": "Reverb",
+        "wet": 0.64,
+        "options": {
+          "decay": 7.2,
+          "preDelay": 0
+        }
+      },
+      {
+        "type": "FeedbackDelay",
+        "wet": 0.52,
+        "options": {
+          "delayTime": "8n",
+          "feedback": 0.63
+        }
+      }
+    ]
+  },
+  "generators": [
+    {
+      "type": "OrbitalNodes",
+      "params": {
+        "nodeCount": 6,
+        "radius": 3,
+        "baseSpeed": 0.5,
+        "speedRatios": [
+          1,
+          1.5,
+          2,
+          2.5,
+          3,
+          3.5,
+          4,
+          4.5,
+          5,
+          5.5,
+          6,
+          6.5,
+          7,
+          7.5,
+          8,
+          8.5
+        ],
+        "direction": "mixed",
+        "trailLength": 0,
+        "nodeSize": 0.08,
+        "showOrbitRing": true,
+        "showConnectionLines": true,
+        "noteMapping": "angle",
+        "minCrossingAngle": 0.04,
+        "cooldownMs": 80
+      }
+    }
+  ],
+  "camera": {
+    "position": {
+      "x": 0.06642057203198712,
+      "y": -4.333411585546558,
+      "z": 1.5671739566209846
+    },
+    "target": {
+      "x": 0.12446200222031949,
+      "y": -0.31469164187196225,
+      "z": -0.581428248344137
+    }
+  }
+}

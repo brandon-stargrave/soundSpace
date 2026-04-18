@@ -1,0 +1,144 @@
+{
+  "orbits": [
+    {
+      "generator": {
+        "type": "OrbitalNodes",
+        "params": {
+          "nodeCount": 5,
+          "radius": 3,
+          "baseSpeed": 0.5,
+          "speedRatios": [
+            1,
+            1.5,
+            2,
+            2.5,
+            3,
+            3.5,
+            4,
+            4.5,
+            5,
+            5.5,
+            6,
+            6.5,
+            7,
+            7.5,
+            8,
+            8.5
+          ],
+          "direction": "mixed",
+          "trailLength": 5,
+          "trailStyle": "line",
+          "tailLength": 0.3,
+          "tailDecompose": 0,
+          "tailDecomposeCount": 6,
+          "nodeStyle": "sphere",
+          "nodeSize": 0.15,
+          "showOrbitRing": true,
+          "showConnectionLines": true,
+          "noteMapping": "angle",
+          "minCrossingAngle": 0.04,
+          "cooldownMs": 80,
+          "spinSpeed": 0.02,
+          "motionAlgorithm": "none",
+          "triggerMethod": "nodeCollision",
+          "orbitIndex": 0
+        },
+        "motionAlgorithm": null,
+        "triggerMethod": {
+          "id": "nodeCollision",
+          "params": {
+            "cooldownMs": 80
+          }
+        },
+        "noteMapping": {
+          "id": "angle",
+          "params": {}
+        }
+      },
+      "scale": {
+        "root": "C",
+        "scaleType": "pentatonic_minor",
+        "octaveLow": 3,
+        "octaveHigh": 5,
+        "mappingMode": "linear",
+        "customDegrees": null
+      },
+      "synth": {
+        "synthType": "Synth",
+        "noteDuration": "16n",
+        "velocityScale": 0.8,
+        "synthOptions": {
+          "oscillator": {
+            "type": "triangle"
+          },
+          "envelope": {
+            "attack": 0.025,
+            "decay": 0.3,
+            "sustain": 0.1,
+            "release": 0.8
+          }
+        },
+        "effects": [
+          {
+            "type": "Filter",
+            "wet": 1,
+            "options": {
+              "frequency": 2000,
+              "type": "lowpass",
+              "rolloff": -12,
+              "Q": 1
+            }
+          },
+          {
+            "type": "Chorus",
+            "wet": 0.3,
+            "options": {
+              "frequency": 1.5,
+              "delayTime": 3.5,
+              "depth": 0.7
+            }
+          },
+          {
+            "type": "Reverb",
+            "wet": 0.4,
+            "options": {
+              "decay": 2.5,
+              "preDelay": 0.01
+            }
+          },
+          {
+            "type": "FeedbackDelay",
+            "wet": 0.2,
+            "options": {
+              "delayTime": "8n",
+              "feedback": 0.3
+            }
+          },
+          {
+            "type": "EQ3",
+            "wet": 1,
+            "options": {
+              "low": 0,
+              "mid": 0,
+              "high": 0,
+              "lowFrequency": 400,
+              "highFrequency": 2500
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "camera": {
+    "position": {
+      "x": 0.5932243216769502,
+      "y": -4.40979250323908,
+      "z": 3.5542546184259214
+    },
+    "target": {
+      "x": 0.8839200727001142,
+      "y": -0.42716111489327124,
+      "z": -0.763693798103482
+    }
+  }
+}
