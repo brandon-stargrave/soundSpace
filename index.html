@@ -15,9 +15,11 @@
     <button id="panel-toggle">&laquo;</button>
     <div id="panel-content"></div>
   </div>
-  <div id="start-overlay">
+  <div id="start-overlay" class="loading">
+    <div id="loader-ring"></div>
     <button id="start-button">soundSpace</button>
-    <p class="start-subtitle">click to begin</p>
+    <p id="start-status" class="start-subtitle">initializing</p>
+    <div id="loader-bar-wrap"><div id="loader-bar"></div></div>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

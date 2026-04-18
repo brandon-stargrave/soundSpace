@@ -2,15 +2,71 @@ import { Engine } from './core/Engine.js';
 import { OrbitalNodes } from './generators/OrbitalNodes.js';
 import { ConfigPanel } from './ui/ConfigPanel.js';
 
-const engine = new Engine(document.getElementById('canvas-container'));
+// ── Loader state + helpers ──────────────────────────────────────────
+// The HTML overlay starts in `.loading` state (ring + progress bar). After
+// engine construction completes we switch to `.ready` (Start button shown).
+// After the user clicks, we switch to `.starting` while audio + first orbit
+// initialize, then fade the overlay out.
+
+const overlay = document.getElementById('start-overlay');
+const statusEl = document.getElementById('start-status');
+const barEl = document.getElementById('loader-bar');
+
+function setProgress(pct, label) {
+  if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  if (label && statusEl) statusEl.textContent = label;
+}
+
+/** Yield once to the browser so it can paint the loader/progress update. */
+function yieldFrame() {
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
+// ── Boot phase: construct Engine with progress reporting ───────────
+// The Engine constructor does heavy synchronous work (renderer, PMREM env
+// map, post-processing chain, ~1500-star field, diffraction stars). We
+// yield a frame first so the pre-JS CSS loader is visible on screen, then
+// update progress as we complete each phase.
+
+let engine = null;
 let configPanel = null;
+
+async function bootEngine() {
+  setProgress(5, 'initializing scene');
+  await yieldFrame();
+
+  // Full Engine construction happens here. It's synchronous but the yield
+  // above ensures the loading UI is painted before it starts.
+  engine = new Engine(document.getElementById('canvas-container'));
+  window._soundSpace = engine; // debug handle
+
+  setProgress(70, 'finalizing visuals');
+  await yieldFrame();
+
+  // Small second yield so the bar visibly jumps to 70% before going to 100%
+  setProgress(100, 'ready');
+  await yieldFrame();
+
+  overlay.classList.remove('loading');
+  overlay.classList.add('ready');
+  if (statusEl) statusEl.textContent = 'click to begin';
+
+  // Wire click-to-start once the Start button is visible
+  const btn = document.getElementById('start-button');
+  btn.addEventListener('click', startApp);
+}
 
 // Start overlay — audio context requires user gesture
 async function startApp() {
-  const overlay = document.getElementById('start-overlay');
+  if (!engine) return;
   if (overlay.dataset.started) return;
   overlay.dataset.started = 'true';
-  overlay.classList.add('fading');
+
+  // Switch overlay to post-click progress state
+  overlay.classList.remove('ready');
+  overlay.classList.add('starting');
+  setProgress(10, 'initializing audio');
+  await yieldFrame();
 
   try {
     await engine.initAudio();
@@ -19,9 +75,21 @@ async function startApp() {
     console.warn('Audio init deferred:', e.message);
   }
 
+  setProgress(55, 'spawning orbit');
+  await yieldFrame();
+
   await engine.addOrbit(OrbitalNodes, { radius: 3.0 });
+
+  setProgress(85, 'building interface');
+  await yieldFrame();
+
   configPanel = new ConfigPanel(engine);
   configPanel.init();
+
+  setProgress(100, 'ready');
+  await yieldFrame();
+
+  overlay.classList.add('fading');
   engine.start();
 
   // Camera control buttons
@@ -151,10 +219,11 @@ async function startApp() {
   }, 600);
 }
 
-document.getElementById('start-button').addEventListener('click', startApp);
+// Expose startApp so devs can trigger it manually from the console
 window._startSoundSpace = startApp;
 
-// Expose engine for debugging
-if (typeof window !== 'undefined') {
-  window._soundSpace = engine;
-}
+// Kick off engine construction now that the pre-JS loading UI is visible
+bootEngine().catch(err => {
+  console.error('Engine boot failed:', err);
+  if (statusEl) statusEl.textContent = 'load failed — see console';
+});
