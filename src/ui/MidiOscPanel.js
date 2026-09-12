@@ -46,6 +46,7 @@ export class MidiOscPanel {
 
     // Enable toggle
     body.appendChild(this._createToggleRow('MIDI Enabled', midi.enabled, (val) => {
+      if (!val) midi.allNotesOff();
       midi.enabled = val;
     }));
 
@@ -57,19 +58,23 @@ export class MidiOscPanel {
     deviceRow.appendChild(deviceLabel);
 
     const deviceSelect = document.createElement('select');
-    const noneOpt = document.createElement('option');
-    noneOpt.value = '';
-    noneOpt.textContent = 'None';
-    deviceSelect.appendChild(noneOpt);
-
-    const devices = midi.getOutputList();
-    for (const d of devices) {
-      const opt = document.createElement('option');
-      opt.value = d.id;
-      opt.textContent = d.name;
-      if (midi.selectedOutput && midi.selectedOutput.id === d.id) opt.selected = true;
-      deviceSelect.appendChild(opt);
-    }
+    const populateDevices = () => {
+      deviceSelect.innerHTML = '';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = 'None';
+      deviceSelect.appendChild(noneOpt);
+      for (const d of midi.getOutputList()) {
+        const opt = document.createElement('option');
+        opt.value = d.id;
+        opt.textContent = d.name;
+        if (midi.selectedOutput && midi.selectedOutput.id === d.id) opt.selected = true;
+        deviceSelect.appendChild(opt);
+      }
+    };
+    populateDevices();
+    midi.onDevicesChanged = populateDevices;
+    if (!navigator.requestMIDIAccess) deviceSelect.disabled = true;
     deviceSelect.addEventListener('change', () => {
       midi.selectOutput(deviceSelect.value);
     });
@@ -104,7 +109,8 @@ export class MidiOscPanel {
 
     body.appendChild(this._createToggleRow('OSC Enabled', osc.enabled, (val) => {
       osc.enabled = val;
-      if (val && !osc.ws) osc.connect();
+      if (!val) osc.disconnect();
+      else if (!osc.ws) osc.connect();
     }));
 
     body.appendChild(this._createTextRow('WS Host', osc.config.wsHost, (val) => {

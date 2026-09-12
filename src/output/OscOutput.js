@@ -5,10 +5,11 @@
 export class OscOutput {
   constructor() {
     this.enabled = false;
+    this.muted = false;
     this.ws = null;
     this._reconnectTimer = null;
     this.config = {
-      wsHost: 'localhost',
+      wsHost: '127.0.0.1',
       wsPort: 8080,
       addressPattern: '/soundspace/note',
       sendArgs: ['midiNote', 'velocity', 'rawValue', 'generatorId'],
@@ -30,6 +31,7 @@ export class OscOutput {
 
       this.ws.onclose = () => {
         console.log('OscOutput: WebSocket closed');
+        this.ws = null;
         if (this.enabled) this._scheduleReconnect();
       };
 
@@ -54,7 +56,7 @@ export class OscOutput {
 
   /** Send a trigger event as an OSC message */
   send(triggerEvent, quantized) {
-    if (!this.enabled || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._canSend()) return;
 
     // Per-orbit/node address: /soundspace/orbit1/node3/note
     const orbitNum = (triggerEvent.orbitIndex || 0) + 1;
@@ -82,7 +84,7 @@ export class OscOutput {
    * @param {number[]} frequencies - held frequencies (Hz)
    */
   sendHarmonicHold(voiceId, rootName, midiNotes, frequencies) {
-    if (!this.enabled || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._canSend()) return;
 
     const address = `/soundspace/harmonic/${voiceId}`;
     const args = [
@@ -101,7 +103,7 @@ export class OscOutput {
 
   /** Emit a /soundspace/harmonic/transpose event with the new root note. */
   sendHarmonicTranspose(rootName, rootMidi) {
-    if (!this.enabled || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this._canSend()) return;
     try {
       this.ws.send(JSON.stringify({
         address: '/soundspace/harmonic/transpose',
@@ -128,9 +130,15 @@ export class OscOutput {
       .filter(Boolean);
   }
 
+  _canSend() {
+    return this.enabled && !this.muted && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
   _scheduleReconnect() {
     this._clearReconnect();
-    this._reconnectTimer = setTimeout(() => this.connect(), 3000);
+    this._reconnectTimer = setTimeout(() => {
+      if (this.enabled) this.connect();
+    }, 3000);
   }
 
   _clearReconnect() {

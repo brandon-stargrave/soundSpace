@@ -2,12 +2,10 @@
  * ProgressionWalker — pluggable algorithms for stepping through a sequence of
  * scale-degree (or semitone) offsets from a base root. Each call to `next()`
  * advances the internal state and returns an offset descriptor:
- *   { degreeIndex: N }  — scale-degree offset (N is an index into the active scale)
- *   { semitones: S }    — raw semitone delta (for fifths / modal interchange)
+ *   { degreeIndex: N }  — scale degree relative to the base root (N indexes the active scale)
+ *   { semitones: S }    — semitone step from the current root (for fifths / modal interchange)
  *
- * The caller (HarmonicOrbit) resolves the offset against the active scale and
- * clamps the resulting root to within ±11 semitones of the base root to
- * prevent unbounded octave drift.
+ * The caller (HarmonicOrbit) resolves the descriptor to a new root pitch class.
  */
 
 export const PROGRESSION_IDS = [

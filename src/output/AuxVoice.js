@@ -29,13 +29,13 @@ const MONO_POOL_SIZE = 4;   // bass drone rotation headroom
 
 export class AuxVoice {
   constructor(config = {}) {
-    this.config = {
+    this.config = structuredClone({
       mode: 'mono',
       synthType: 'Synth',
       synthOptions: {},
       effects: [],
       ...config,
-    };
+    });
     this.enabled = true;
     this._voices = [];            // Array<{synth, freq}>
     this._voiceCursor = 0;        // round-robin allocation pointer
@@ -149,7 +149,7 @@ export class AuxVoice {
 
   /** Update config and rebuild the full chain (e.g. synth-type change). */
   setConfig(updates) {
-    Object.assign(this.config, updates);
+    Object.assign(this.config, structuredClone(updates));
     if (this._initialized) {
       const heldSnapshot = [...this._held];
       this._buildChain();
@@ -159,7 +159,7 @@ export class AuxVoice {
   }
 
   getConfig() {
-    return { ...this.config };
+    return structuredClone(this.config);
   }
 
   /** Update a single effect param live without rebuilding the chain. */

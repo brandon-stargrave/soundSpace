@@ -159,6 +159,7 @@ export class HarmonicOrbit {
   }
 
   async initAudio() {
+    if (this._audioInitialized) return;
     this._pad = new AuxVoice(DEFAULT_PAD_SYNTH_CONFIG);
     this._bass = new AuxVoice(DEFAULT_BASS_SYNTH_CONFIG);
     await this._pad.init();
@@ -191,7 +192,7 @@ export class HarmonicOrbit {
       const srcOrbit = this.engine.generators[this.params.syncSourceIndex];
       if (srcOrbit && srcOrbit.nodes && srcOrbit.nodes[0]) {
         const srcAngle = srcOrbit.nodes[0].angle;
-        const dA = angleDelta(this._sourcePrevAngle, srcAngle);
+        const dA = angleDelta(srcAngle, this._sourcePrevAngle);
         this._sourceTotalAngle += dA;
         this._sourcePrevAngle = srcAngle;
         const ratio = Math.max(0.01, this.params.syncRatio);
@@ -269,19 +270,17 @@ export class HarmonicOrbit {
     const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
 
     const descriptor = this._progression.next(scaleIntervals.length);
-    let semitoneOffset;
+    let newRootSemitone;
     if (descriptor.semitones !== undefined) {
-      semitoneOffset = descriptor.semitones;
+      // Semitone descriptors step from the current root (fifthsUp walks the circle)
+      const currentSemitone = NOTE_NAME_TO_SEMITONE[this._currentRoot] ?? 0;
+      newRootSemitone = currentSemitone + descriptor.semitones;
     } else {
-      const idx = descriptor.degreeIndex ?? 0;
-      semitoneOffset = scaleIntervals[idx] || 0;
+      // Degree descriptors are positions in the scale built on the base root
+      const baseSemitone = NOTE_NAME_TO_SEMITONE[this._baseRoot] ?? 0;
+      newRootSemitone = baseSemitone + (scaleIntervals[descriptor.degreeIndex ?? 0] || 0);
     }
-    while (semitoneOffset > 11) semitoneOffset -= 12;
-    while (semitoneOffset < -11) semitoneOffset += 12;
-
-    const baseSemitone = NOTE_NAME_TO_SEMITONE[this._baseRoot] ?? 0;
-    const newRootSemitone = ((baseSemitone + semitoneOffset) % 12 + 12) % 12;
-    const newRoot = NOTE_NAMES[newRootSemitone];
+    const newRoot = NOTE_NAMES[((newRootSemitone % 12) + 12) % 12];
 
     // Snapshot previous notes to detect "no change" situations
     const prevPadNotes = [...this._currentMidiPad];
@@ -868,7 +867,12 @@ export class HarmonicOrbit {
     }
     if (data.progression) this._progression.deserialize(data.progression);
     if (data.baseRoot) this._baseRoot = data.baseRoot;
-    if (typeof data.cyclePos === 'number') this._cyclePos = data.cyclePos;
+    if (typeof data.cyclePos === 'number') {
+      this._cyclePos = data.cyclePos;
+      // Re-derive the last vertex so the restored position isn't read as a fresh crossing
+      this._lastVertexIdx = Math.floor(this._cyclePos * this.params.sides) % this.params.sides;
+      this._updateTravelerPosition(this._cyclePos);
+    }
     if (data.padConfig && this._pad) this._pad.setConfig(data.padConfig);
     if (data.bassConfig && this._bass) this._bass.setConfig(data.bassConfig);
   }

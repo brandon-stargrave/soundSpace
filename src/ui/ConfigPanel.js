@@ -113,12 +113,11 @@ export class ConfigPanel {
     this._genSection.appendChild(genPanel.render());
 
     // Scale (per-orbit, below Harmonic Orbit)
-    const quantizer = orbit._scaleQuantizer || this.engine.scaleQuantizer;
-    const scalePanel = new ScalePanel(quantizer);
+    const scalePanel = new ScalePanel(orbit._scaleQuantizer);
     this._sectionContainer.appendChild(scalePanel.render());
 
     // Synth (per-orbit, below Harmonic Orbit)
-    const outputPanel = new OutputPanel(orbit._toneOutput || this.engine.toneOutput);
+    const outputPanel = new OutputPanel(orbit._toneOutput);
     this._sectionContainer.appendChild(outputPanel.render());
   }
 

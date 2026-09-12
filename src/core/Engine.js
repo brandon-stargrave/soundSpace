@@ -31,14 +31,8 @@ export class Engine {
     this.sceneManager.scene.add(this._nebulaGroup);
     this.nebula = null; // created after first orbit is added
 
-    // Per-orbit audio chains stored on each generator
-    // Legacy single chain kept for backward compat during transition
-    this.scaleQuantizer = new ScaleQuantizer();
-    this.outputRouter = new OutputRouter(this.scaleQuantizer);
-    this.toneOutput = new ToneOutput();
-    this.outputRouter.addOutput(this.toneOutput);
-
-    // Shared MIDI and OSC outputs — registered in every orbit's router
+    // Shared MIDI and OSC outputs — registered in every orbit's router.
+    // Each orbit owns its own quantizer + router + synth (createOrbitAudioChain).
     this.midiOutput = new MidiOutput();
     this.oscOutput = new OscOutput();
 
@@ -50,9 +44,14 @@ export class Engine {
     this._defocusMuted = false;
     this.spatialEnabled = false; // Global 3D spatial audio toggle
     this.spatialAxis = 'horizontal'; // 'horizontal' | 'vertical' — vertical is for portrait phones
+    this.debugPerf = false; // log frame stats every 2s (window._soundSpace.debugPerf = true)
     this._lastTime = 0;
     this._rafId = null;
     this._audioInitialized = false;
+    this._audioInitPromise = null;
+
+    this._onVisibilityChange = this._handleVisibilityChange.bind(this);
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
 
     // Harmonic orbit — engine-level singleton (polygon + aux voices). Init'd
     // visually in constructor; audio voices init inside initAudio (user gesture).
@@ -68,10 +67,6 @@ export class Engine {
         gen._toneOutput.setSpatialEnabled(this.spatialEnabled);
       }
     }
-    // Also apply to the legacy shared toneOutput
-    if (this.toneOutput?.setSpatialEnabled) {
-      this.toneOutput.setSpatialEnabled(this.spatialEnabled);
-    }
   }
 
   /**
@@ -85,9 +80,6 @@ export class Engine {
       if (gen._toneOutput?.setSpatialAxis) {
         gen._toneOutput.setSpatialAxis(this.spatialAxis);
       }
-    }
-    if (this.toneOutput?.setSpatialAxis) {
-      this.toneOutput.setSpatialAxis(this.spatialAxis);
     }
   }
 
@@ -111,13 +103,32 @@ export class Engine {
     L.upZ.value = _tmpUp.z;
   }
 
-  /** Initialize audio (must be called from user gesture) */
-  async initAudio() {
-    await this.toneOutput.init();
+  /**
+   * Initialize audio (must be called from a user gesture). If an attempt
+   * fails it can be retried from a later gesture; concurrent calls share
+   * a single attempt.
+   */
+  initAudio() {
+    if (!this._audioInitPromise) {
+      this._audioInitPromise = this._initAudio().catch((e) => {
+        this._audioInitPromise = null;
+        throw e;
+      });
+    }
+    return this._audioInitPromise;
+  }
+
+  async _initAudio() {
+    await Tone.start();
+    // Orbits created before audio was available still need their synth chains
+    for (const gen of this.generators) {
+      if (gen._toneOutput && !gen._toneOutput._initialized) {
+        await gen._toneOutput.init();
+      }
+    }
     await this.midiOutput.init();
     // OSC connects on demand when enabled, not at init
     this._audioInitialized = true;
-    // Aux voices for harmonic orbit — need Tone.start() which happened above
     if (this.harmonicOrbit) {
       await this.harmonicOrbit.initAudio();
     }
@@ -165,6 +176,7 @@ export class Engine {
       console.warn(`Max ${MAX_ORBITS} orbits reached`);
       return null;
     }
+    config = { ...config };
 
     // Create per-orbit audio chain
     const audio = await this.createOrbitAudioChain(scaleConfig, synthConfig);
@@ -176,7 +188,11 @@ export class Engine {
       config.radius = maxRadius + 1.5;
     }
 
-    config.orbitIndex = this.generators.length;
+    // Lowest free index, so a removed orbit's MIDI channel and palette are reused
+    const usedIndices = new Set(this.generators.map(g => g.params.orbitIndex));
+    let orbitIndex = 0;
+    while (usedIndices.has(orbitIndex)) orbitIndex++;
+    config.orbitIndex = orbitIndex;
 
     const generator = new GeneratorClass(
       this.sceneManager,
@@ -213,10 +229,9 @@ export class Engine {
 
     // First orbit: register nebula materials and rebuild trails with actual node colors
     if (this.generators.length === 1) {
-      if (this.nebula._material) this.sceneManager.registerSoftParticleMaterial(this.nebula._material);
-      if (this.nebula._dustMaterial) this.sceneManager.registerSoftParticleMaterial(this.nebula._dustMaterial);
-      if (this.nebula._cloudMaterial) this.sceneManager.registerSoftParticleMaterial(this.nebula._cloudMaterial);
-      if (this.nebula._nanoMaterial) this.sceneManager.registerSoftParticleMaterial(this.nebula._nanoMaterial);
+      for (const mat of this._nebulaMaterials()) {
+        this.sceneManager.registerSoftParticleMaterial(mat);
+      }
       // Now nodes exist — rebuild nebula with orbit 0's colors for spiral arm traces
       if (generator.nodes && generator.nodes.length > 0) {
         const nodeColors = generator.nodes.map(n => n.colorHex);
@@ -252,57 +267,48 @@ export class Engine {
 
       // If all orbits removed, clean up nebula
       if (this.generators.length === 0 && this.nebula) {
-        this.sceneManager.unregisterSoftParticleMaterial(this.nebula._material);
-        this.sceneManager.unregisterSoftParticleMaterial(this.nebula._dustMaterial);
+        for (const mat of this._nebulaMaterials()) {
+          this.sceneManager.unregisterSoftParticleMaterial(mat);
+        }
         this.nebula.dispose();
         this.nebula = null;
       }
     }
   }
 
-  /** Reorder orbits — swap positions in the array */
-  reorderOrbits(fromIndex, toIndex) {
-    if (fromIndex < 0 || fromIndex >= this.generators.length) return;
-    if (toIndex < 0 || toIndex >= this.generators.length) return;
-    const [moved] = this.generators.splice(fromIndex, 1);
-    this.generators.splice(toIndex, 0, moved);
+  _nebulaMaterials() {
+    const n = this.nebula;
+    return n ? [n._material, n._dustMaterial, n._cloudMaterial, n._nanoMaterial].filter(Boolean) : [];
   }
 
-  _setupDefocusMute() {
-    document.addEventListener('visibilitychange', () => {
-      if (!this.muteOnDefocus) return;
-      if (document.hidden) {
-        // Mute on defocus (only if not already manually muted)
-        if (!this.muted) {
-          this._defocusMuted = true;
-          for (const gen of this.generators) {
-            if (gen._toneOutput) gen._toneOutput.enabled = false;
-          }
-          this.toneOutput.enabled = false;
-          if (this.harmonicOrbit) this.harmonicOrbit.setSilenced(true);
+  _handleVisibilityChange() {
+    if (!this.muteOnDefocus) return;
+    if (document.hidden) {
+      // Mute on defocus (only if not already manually muted)
+      if (!this.muted) {
+        this._defocusMuted = true;
+        for (const gen of this.generators) {
+          if (gen._toneOutput) gen._toneOutput.enabled = false;
         }
-      } else {
-        // Restore on refocus (only if we were the ones who muted)
-        if (this._defocusMuted) {
-          this._defocusMuted = false;
-          if (!this.muted) {
-            for (const gen of this.generators) {
-              if (gen._toneOutput) gen._toneOutput.enabled = true;
-            }
-            this.toneOutput.enabled = true;
-            if (this.harmonicOrbit) {
-              this.harmonicOrbit.setSilenced(this.paused);
-            }
-          }
+        if (this.harmonicOrbit) this.harmonicOrbit.setSilenced(true);
+      }
+    } else if (this._defocusMuted) {
+      // Restore on refocus (only if we were the ones who muted)
+      this._defocusMuted = false;
+      if (!this.muted) {
+        for (const gen of this.generators) {
+          if (gen._toneOutput) gen._toneOutput.enabled = true;
+        }
+        if (this.harmonicOrbit) {
+          this.harmonicOrbit.setSilenced(this.paused);
         }
       }
-    });
+    }
   }
 
   /** Start the animation/simulation loop */
   start() {
     if (this.running) return;
-    this._setupDefocusMute();
     this.running = true;
     this._lastTime = performance.now();
     this._loop();
@@ -331,13 +337,13 @@ export class Engine {
 
   toggleMute() {
     this.muted = !this.muted;
-    // Mute all per-orbit synths + shared outputs
+    // Mute all per-orbit synths + shared outputs. MIDI/OSC keep their own
+    // enabled state; `muted` is a separate gate so unmuting restores them.
     for (const gen of this.generators) {
       if (gen._toneOutput) gen._toneOutput.enabled = !this.muted;
     }
-    this.toneOutput.enabled = !this.muted;
-    this.midiOutput.enabled = this.midiOutput.enabled && !this.muted;
-    this.oscOutput.enabled = this.oscOutput.enabled && !this.muted;
+    this.midiOutput.muted = this.muted;
+    this.oscOutput.muted = this.muted;
     // Release/restore harmonic orbit drones — they're sustained and would
     // otherwise keep playing through a mute.
     if (this.harmonicOrbit) {
@@ -369,29 +375,25 @@ export class Engine {
     // Sync Tone.Listener to camera each frame (cheap no-op when spatial is off)
     this._updateListener();
 
-    this.sceneManager.render();
+    this.sceneManager.render(deltaTime);
 
-    // Performance stats — log every 2 seconds
+    if (this.debugPerf) this._logPerf(deltaTime);
+  }
+
+  _logPerf(deltaTime) {
     this._perfFrames = (this._perfFrames || 0) + 1;
     this._perfAccum = (this._perfAccum || 0) + deltaTime;
-    if (this._perfAccum >= 2.0) {
-      const fps = (this._perfFrames / this._perfAccum).toFixed(1);
-      const frameMs = ((this._perfAccum / this._perfFrames) * 1000).toFixed(1);
-      const info = this.sceneManager.renderer.info;
-      const draws = info.render.calls;
-      const tris = info.render.triangles;
-      const points = info.render.points;
-      const textures = info.memory.textures;
-      const geometries = info.memory.geometries;
-      const orbits = this.generators.length;
-      console.log(
-        `%c[perf]%c ${fps} fps | ${frameMs}ms/frame | ${draws} draws | ${tris} tris | ${points} pts | ${textures} tex | ${geometries} geo | ${orbits} orbits`,
-        'color: #00ff88; font-weight: bold',
-        'color: #88aacc'
-      );
-      this._perfFrames = 0;
-      this._perfAccum = 0;
-    }
+    if (this._perfAccum < 2.0) return;
+    const fps = (this._perfFrames / this._perfAccum).toFixed(1);
+    const frameMs = ((this._perfAccum / this._perfFrames) * 1000).toFixed(1);
+    const info = this.sceneManager.renderer.info;
+    console.log(
+      `%c[perf]%c ${fps} fps | ${frameMs}ms/frame | ${info.render.calls} draws | ${info.render.triangles} tris | ${info.render.points} pts | ${info.memory.textures} tex | ${info.memory.geometries} geo | ${this.generators.length} orbits`,
+      'color: #00ff88; font-weight: bold',
+      'color: #88aacc'
+    );
+    this._perfFrames = 0;
+    this._perfAccum = 0;
   }
 
   /** Serialize entire engine state */
@@ -401,8 +403,8 @@ export class Engine {
     return {
       orbits: this.generators.map(g => ({
         generator: g.serialize(),
-        scale: g._scaleQuantizer ? g._scaleQuantizer.getConfig() : this.scaleQuantizer.getConfig(),
-        synth: g._toneOutput ? g._toneOutput.getConfig() : this.toneOutput.getConfig(),
+        scale: g._scaleQuantizer.getConfig(),
+        synth: g._toneOutput.getConfig(),
       })),
       camera: {
         position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
@@ -503,20 +505,14 @@ export class Engine {
 
   dispose() {
     this.stop();
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
     if (this.harmonicOrbit) {
       this.harmonicOrbit.dispose();
       this.harmonicOrbit = null;
     }
-    for (const gen of this.generators) {
-      if (gen._toneOutput) gen._toneOutput.dispose();
-      gen.dispose();
+    while (this.generators.length > 0) {
+      this.removeGenerator(0);
     }
-    this.generators = [];
-    if (this.nebula) {
-      this.nebula.dispose();
-      this.nebula = null;
-    }
-    this.toneOutput.dispose();
     this.midiOutput.dispose();
     this.oscOutput.dispose();
     this.sceneManager.dispose();

@@ -39,6 +39,7 @@ async function bootEngine() {
   // above ensures the loading UI is painted before it starts.
   engine = new Engine(document.getElementById('canvas-container'));
   window._soundSpace = engine; // debug handle
+  window.addEventListener('pagehide', () => engine.midiOutput.allNotesOff());
 
   setProgress(70, 'finalizing visuals');
   await yieldFrame();
@@ -71,8 +72,19 @@ async function startApp() {
   try {
     await engine.initAudio();
   } catch (e) {
-    // Audio may fail without real user gesture — visuals still run
+    // Audio may fail without a real user gesture — visuals still run, and
+    // every later click or key press retries until it succeeds
     console.warn('Audio init deferred:', e.message);
+    const retryAudio = () => {
+      engine.initAudio()
+        .then(() => {
+          window.removeEventListener('pointerdown', retryAudio);
+          window.removeEventListener('keydown', retryAudio);
+        })
+        .catch(err => console.warn('Audio init retry failed:', err.message));
+    };
+    window.addEventListener('pointerdown', retryAudio);
+    window.addEventListener('keydown', retryAudio);
   }
 
   setProgress(55, 'spawning orbit');

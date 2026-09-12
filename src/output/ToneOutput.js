@@ -11,7 +11,7 @@ import { clamp } from '../util/math.js';
  */
 export class ToneOutput {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_SYNTH_CONFIG, ...config };
+    this.config = structuredClone({ ...DEFAULT_SYNTH_CONFIG, ...config });
     this.enabled = true;
     this.synth = null;            // legacy ref (unused with voice pool)
     this.effectsChain = [];
@@ -228,7 +228,7 @@ export class ToneOutput {
 
   /** Update synth config and rebuild */
   setConfig(updates) {
-    Object.assign(this.config, updates);
+    Object.assign(this.config, structuredClone(updates));
     if (this._initialized) {
       this._buildSynthChain();
     }
@@ -314,7 +314,7 @@ export class ToneOutput {
   }
 
   getConfig() {
-    return { ...this.config };
+    return structuredClone(this.config);
   }
 
   _disposeChain() {
