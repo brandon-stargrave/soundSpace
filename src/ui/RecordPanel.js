@@ -257,7 +257,7 @@ export class RecordPanel {
       const f = this.recorder.lastFile;
       if (f) {
         const mb = (f.size / (1024 * 1024)).toFixed(1);
-        this._statusLine.textContent = `Saved ${f.name} (${mb} MB)`;
+        this._statusLine.textContent = `Saved ${f.name} (${mb} MB)` + (f.note ? ` — ${f.note}` : '');
       } else {
         this._statusLine.textContent = 'Done';
       }
@@ -270,6 +270,11 @@ export class RecordPanel {
 
   _updateIdleStatus() {
     if (!this._statusLine) return;
+    if (!Recorder.isSupported()) {
+      this._toggleBtn.disabled = true;
+      this._statusLine.textContent = 'Recording is not supported in this browser';
+      return;
+    }
     if (this.recorder.isRecording || this.recorder.isEncoding) return;
     const canvas = this.sceneManager.renderer.domElement;
     const w = canvas.width;

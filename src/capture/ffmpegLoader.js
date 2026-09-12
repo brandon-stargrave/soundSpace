@@ -51,6 +51,8 @@ export async function getFFmpeg(onProgress, onLog) {
     _loadPromise = null;
     return ffmpeg;
   })();
+  // A failed download must not be cached, or every later call would re-reject
+  _loadPromise.catch(() => { _loadPromise = null; });
 
   return _loadPromise;
 }
@@ -58,4 +60,12 @@ export async function getFFmpeg(onProgress, onLog) {
 /** Returns true if the ffmpeg core has already been loaded (no fetch needed). */
 export function isLoaded() {
   return _instance !== null;
+}
+
+/** Discard the loaded instance (e.g. after an out-of-memory abort) so the next call loads a fresh core. */
+export function resetFFmpeg() {
+  if (_instance) {
+    try { _instance.terminate(); } catch {}
+  }
+  _instance = null;
 }
