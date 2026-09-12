@@ -46,9 +46,10 @@ export class StaticPins extends TriggerMethod {
       case 'scale':
         // Place pins at scale-degree positions (distribute count across 2*PI)
         for (let i = 0; i < pinCount; i++) {
-          // Use pentatonic-like spacing: uneven but musical
-          const frac = [0, 0.1, 0.2, 0.35, 0.5, 0.6, 0.7, 0.85][i % 8] || (i / pinCount);
-          this._pinAngles.push(frac * TWO_PI + (Math.floor(i / 8) * TWO_PI));
+          // Use pentatonic-like spacing: uneven but musical. Pins past the
+          // first 8 shift by a third of the smallest gap so none coincide.
+          const frac = [0, 0.1, 0.2, 0.35, 0.5, 0.6, 0.7, 0.85][i % 8] + Math.floor(i / 8) * (0.1 / 3);
+          this._pinAngles.push(frac * TWO_PI);
         }
         break;
       case 'even':
@@ -90,6 +91,8 @@ export class StaticPins extends TriggerMethod {
         // Compare in local angle space (both node.angle and pinAngle are local)
         const prevDelta = angleDelta(node.prevAngle, pinAngle);
         const currDelta = angleDelta(node.angle, pinAngle);
+        // angleDelta also flips sign at the pin's antipode (±π) — only a flip near the pin is a crossing
+        if (Math.abs(prevDelta) > Math.PI / 2 || Math.abs(currDelta) > Math.PI / 2) continue;
 
         if ((prevDelta > 0 && currDelta <= 0) || (prevDelta < 0 && currDelta >= 0)) {
           // Cooldown per node-pin pair
@@ -186,7 +189,6 @@ export class StaticPins extends TriggerMethod {
       { key: 'pinCount', label: 'Pin Count', type: 'range', min: 1, max: 24, step: 1, value: this.params.pinCount },
       { key: 'pinLayout', label: 'Pin Layout', type: 'select', value: this.params.pinLayout, options: ['even', 'euclidean', 'scale'] },
       { key: 'pinCooldownMs', label: 'Pin Cooldown (ms)', type: 'range', min: 0, max: 500, step: 10, value: this.params.pinCooldownMs },
-      { key: 'pinRotate', label: 'Rotate w/ Ring', type: 'toggle', value: this.params.pinRotate },
     ];
   }
 

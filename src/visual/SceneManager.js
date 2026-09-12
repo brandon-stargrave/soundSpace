@@ -11,6 +11,9 @@ import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { createSoftParticleMaterial } from './SoftParticleMaterial.js';
 
+const _viewSize = new THREE.Vector2();
+const _worldOrigin = new THREE.Vector3();
+
 export class SceneManager {
   constructor(containerEl) {
     this.container = containerEl;
@@ -90,7 +93,15 @@ export class SceneManager {
   registerSoftParticleMaterial(material) {
     if (material && !this._softParticleMaterials.includes(material)) {
       this._softParticleMaterials.push(material);
+      this._applySoftParticleScale(material);
     }
+  }
+
+  /** Point-size attenuation depends on drawing-buffer height and pixel ratio. */
+  _applySoftParticleScale(material) {
+    if (!material.uniforms?.uScale) return;
+    const h = this.renderer.getSize(_viewSize).y;
+    material.uniforms.uScale.value = h * this.renderer.getPixelRatio() * 0.5;
   }
 
   unregisterSoftParticleMaterial(material) {
@@ -687,19 +698,22 @@ export class SceneManager {
    *           (manual-resolution / capture path)
    */
   _applyResolution(w, h, updateCanvasStyle) {
+    // setSize multiplies by the pixel ratio, so a manual capture resolution
+    // must use 1 to stay exact. Window tracking re-reads the display's ratio
+    // in case the window moved to another screen.
+    const pr = this._manualResolution ? 1 : Math.min(window.devicePixelRatio, 2);
+    if (pr !== this.renderer.getPixelRatio()) {
+      this.renderer.setPixelRatio(pr);
+      this.composer.setPixelRatio(pr);
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, updateCanvasStyle);
     this.composer.setSize(w, h);
     if (this._nebulaRT) this._nebulaRT.setSize(w, h);
 
-    // Update all soft particle material scale uniforms
-    const pr = this.renderer.getPixelRatio();
-    const scale = h * pr * 0.5;
     for (const mat of this._softParticleMaterials) {
-      if (mat.uniforms && mat.uniforms.uScale) {
-        mat.uniforms.uScale.value = scale;
-      }
+      this._applySoftParticleScale(mat);
     }
   }
 
@@ -768,13 +782,17 @@ export class SceneManager {
     canvas.style.outlineOffset = '';
   }
 
-  render() {
+  /** @param {number} [dt] - seconds since the previous frame */
+  render(dt = 1 / 60) {
     this.controls.update();
+    // The per-frame decay constants below were tuned at 60 fps; raising them
+    // to this power keeps their timing the same at any refresh rate.
+    const frames = dt * 60;
 
     // Smooth camera animation (transition to home or orbit start)
     if (this._cameraAnim) {
       const a = this._cameraAnim;
-      a.progress += (1 / 60) / a.duration;
+      a.progress += dt / a.duration;
       if (a.progress >= 1) {
         this.camera.position.copy(a.endPos);
         this.controls.target.copy(a.endTarget);
@@ -794,7 +812,7 @@ export class SceneManager {
 
     // Continuous orbit around Z axis (after transition completes)
     if (this._orbitMode && !this._cameraAnim) {
-      this._orbitAngle += this._orbitSpeed * (1 / 60);
+      this._orbitAngle += this._orbitSpeed * dt;
       const rXY = this._orbitDistance * Math.cos(this._orbitElevation);
       const zH = this._orbitDistance * Math.sin(this._orbitElevation);
       const t = this._orbitTarget;
@@ -808,8 +826,8 @@ export class SceneManager {
     }
 
     if (this.starField) {
-      this.starField.rotation.y += 0.00005;
-      this.starField.rotation.x += 0.00002;
+      this.starField.rotation.y += 0.00005 * frames;
+      this.starField.rotation.x += 0.00002 * frames;
 
       const now = performance.now() * 0.001;
       const sizes = this._starSizeAttr.array;
@@ -817,18 +835,19 @@ export class SceneManager {
 
       // Decay global twinkle trigger
       if (this._starTwinkle > 0.001) {
-        this._starTwinkle *= 0.92;
+        this._starTwinkle *= Math.pow(0.92, frames);
       } else {
         this._starTwinkle = 0;
       }
 
       // Per-star update
+      const starDecay = Math.pow(0.95, frames);
       for (let i = 0; i < this._starMeta.length; i++) {
         const s = this._starMeta[i];
 
         // Decay per-star twinkle
         if (s.twinkleAmount > 0.001) {
-          s.twinkleAmount *= 0.95;
+          s.twinkleAmount *= starDecay;
         } else {
           s.twinkleAmount = 0;
         }
@@ -850,7 +869,6 @@ export class SceneManager {
         if (!ss.alive) continue;
 
         // Advance orbit
-        const dt = 1 / 60;
         ss.angle += ss.orbitSpeed * dt;
         ss.totalAngle += Math.abs(ss.orbitSpeed * dt);
 
@@ -894,7 +912,7 @@ export class SceneManager {
 
         // Strong note response
         if (ss.twinkleAmount > 0.01) {
-          ss.twinkleAmount *= 0.90;
+          ss.twinkleAmount *= Math.pow(0.90, frames);
         }
         const pulse = 1 + ss.twinkleAmount * 3.5;
 
@@ -905,7 +923,7 @@ export class SceneManager {
           spr.scale.set(lScale, lScale, 1);
           const lOpacity = (l < 2 ? 0.7 : 0.35) * jitter * envelope * Math.min(pulse, 4.0);
           spr.material.opacity = lOpacity;
-          spr.material.rotation += (l + 1) * ss.rotSpeed;
+          spr.material.rotation += (l + 1) * ss.rotSpeed * frames;
         }
 
         // ── Trail particles — emit sparkly nano dots behind the star ──
@@ -965,9 +983,10 @@ export class SceneManager {
           tp.sprite.position.x += tp.vx * dt;
           tp.sprite.position.y += tp.vy * dt;
           tp.sprite.position.z += tp.vz * dt;
-          tp.vx *= 0.97;
-          tp.vy *= 0.97;
-          tp.vz *= 0.97;
+          const drag = Math.pow(0.97, frames);
+          tp.vx *= drag;
+          tp.vy *= drag;
+          tp.vz *= drag;
         }
       }
 
@@ -975,7 +994,7 @@ export class SceneManager {
       // sparkles in place then fades and disposes. Used by the harmonic orbit
       // on transpose events.
       if (this._stationaryStars && this._stationaryStars.length > 0) {
-        const ssDt = 1 / 60;
+        const ssDt = dt;
         for (let si = this._stationaryStars.length - 1; si >= 0; si--) {
           const st = this._stationaryStars[si];
           st.life += ssDt;
@@ -1011,7 +1030,7 @@ export class SceneManager {
       if (this._brightStars) {
         for (const bs of this._brightStars) {
           if (bs.twinkleAmount > 0.001) {
-            bs.twinkleAmount *= 0.93;
+            bs.twinkleAmount *= Math.pow(0.93, frames);
           } else {
             bs.twinkleAmount = 0;
           }
@@ -1029,7 +1048,7 @@ export class SceneManager {
               : bs.baseOpacity * 0.5 * flicker * Math.min(pulse * 1.3, 3.5);
             sp.material.opacity = layerOpacity;
             // Slowly rotate outer layers for prismatic shimmer — per-star speed
-            sp.material.rotation += (l + 1) * bs.rotSpeed;
+            sp.material.rotation += (l + 1) * bs.rotSpeed * frames;
           }
         }
       }
@@ -1038,11 +1057,10 @@ export class SceneManager {
     // God rays — render nebula layer to separate target, then composite
     if (this.godRayPass && this._nebulaRT) {
       // Project world origin to screen UV
-      const origin = new THREE.Vector3(0, 0, 0);
-      origin.project(this.camera);
+      _worldOrigin.set(0, 0, 0).project(this.camera);
       this._godRayCenter.set(
-        (origin.x + 1) * 0.5,
-        (origin.y + 1) * 0.5
+        (_worldOrigin.x + 1) * 0.5,
+        (_worldOrigin.y + 1) * 0.5
       );
 
       // Two-stage AR envelope:
@@ -1052,11 +1070,11 @@ export class SceneManager {
       //      gives a gentle attack ramp rather than an instant spike, and
       //      smooths out the release curve further.
       if (this._godRayTarget > 0.001) {
-        this._godRayTarget *= 0.985;
+        this._godRayTarget *= Math.pow(0.985, frames);
       } else {
         this._godRayTarget = 0;
       }
-      this._godRayIntensity += (this._godRayTarget - this._godRayIntensity) * 0.15;
+      this._godRayIntensity += (this._godRayTarget - this._godRayIntensity) * (1 - Math.pow(0.85, frames));
       if (this._godRayIntensity < 0.001 && this._godRayTarget === 0) {
         this._godRayIntensity = 0;
       }
@@ -1079,7 +1097,7 @@ export class SceneManager {
 
     // Chromatic aberration decay
     if (this._rgbShiftIntensity > 0.001) {
-      this._rgbShiftIntensity *= 0.88;
+      this._rgbShiftIntensity *= Math.pow(0.88, frames);
       // Output multiplier restored to a perceptually visible range. The old
       // value of 0.003 was left over from earlier debugging; peak amounts
       // were below 0.001 which is effectively invisible (visible shift

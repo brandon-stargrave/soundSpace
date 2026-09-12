@@ -70,7 +70,8 @@ export class PostFXPanel {
     // Crossing Flash
     if (this.engine) {
       body.appendChild(this._createDivider('Crossing Flash'));
-      body.appendChild(this._createToggleRow('Color Mix Flash', true, (val) => {
+      const flashOn = this.engine.generators[0]?._crossingFlashEnabled ?? false;
+      body.appendChild(this._createToggleRow('Color Mix Flash', flashOn, (val) => {
         for (const gen of this.engine.generators) {
           gen._crossingFlashEnabled = val;
         }

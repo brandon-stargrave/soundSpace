@@ -164,7 +164,6 @@ export class ZoneTriggers extends TriggerMethod {
       { key: 'zoneCount', label: 'Zone Count', type: 'range', min: 1, max: 8, step: 1, value: this.params.zoneCount },
       { key: 'zoneWidth', label: 'Zone Width', type: 'range', min: 0.05, max: 1.0, step: 0.05, value: this.params.zoneWidth },
       { key: 'triggerOn', label: 'Trigger On', type: 'select', value: this.params.triggerOn, options: ['enter', 'exit', 'both'] },
-      { key: 'zoneRotate', label: 'Rotate w/ Ring', type: 'toggle', value: this.params.zoneRotate },
       { key: 'zoneCooldownMs', label: 'Cooldown (ms)', type: 'range', min: 0, max: 500, step: 10, value: this.params.zoneCooldownMs },
     ];
   }

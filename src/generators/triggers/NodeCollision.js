@@ -39,20 +39,11 @@ export class NodeCollision extends TriggerMethod {
     const a = nodes[i];
     const b = nodes[j];
 
-    // Physical proximity check
-    const ax = a.mesh.position.x;
-    const ay = a.mesh.position.y;
-    const bx = b.mesh.position.x;
-    const by = b.mesh.position.y;
-    const dx = ax - bx;
-    const dy = ay - by;
-    const distSq = dx * dx + dy * dy;
-    const threshold = gp.nodeSize * 6;
-    if (distSq > threshold * threshold) return false;
-
-    // Angular crossing: delta changed sign
+    // Angular crossing: delta changed sign. angleDelta also flips sign when the
+    // nodes are opposite each other (±π), so only a flip near zero counts.
     const prevDelta = angleDelta(a.prevAngle, b.prevAngle);
     const currDelta = angleDelta(a.angle, b.angle);
+    if (Math.abs(prevDelta) > Math.PI / 2 || Math.abs(currDelta) > Math.PI / 2) return false;
     if (!((prevDelta > 0 && currDelta <= 0) || (prevDelta < 0 && currDelta >= 0))) {
       return false;
     }

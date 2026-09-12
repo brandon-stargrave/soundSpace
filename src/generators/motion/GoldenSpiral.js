@@ -16,8 +16,8 @@ const IRRATIONAL_BASES = {
   silver: 1 + Math.sqrt(2),         // 2.41421... silver ratio
 };
 
-// Fibonacci sequence for structural indexing
-const FIB = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610];
+// Fibonacci sequence for structural indexing (read at offset 2, so 16 nodes need 18 terms)
+const FIB = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597];
 
 export class GoldenSpiral extends MotionAlgorithm {
   constructor() {
@@ -46,13 +46,15 @@ export class GoldenSpiral extends MotionAlgorithm {
     }
 
     for (let i = 0; i < n; i++) {
-      // Use Fibonacci index or linear index
-      const index = fibStructure ? (FIB[i] || i) : i;
+      // Position in [0, (n-1)/n]: the linear index, or Fibonacci spacing
+      // (0, 1, 2, 4, 7, 12, …) normalized into the same range so the
+      // exponent stays bounded at any node count
+      const t = fibStructure
+        ? ((FIB[i + 2] - 1) / Math.max(FIB[n + 1] - 1, 1)) * ((n - 1) / n)
+        : i / n;
 
-      // Ratio: base^(index * powerSpread / nodeCount)
-      // This distributes speeds logarithmically across the irrational base
-      const exponent = (index * powerSpread) / Math.max(n, 1);
-      const ratio = Math.pow(base, exponent);
+      // Ratio: base^(t * powerSpread) — speeds spread logarithmically across the irrational base
+      const ratio = Math.pow(base, t * powerSpread);
 
       this._speedBuffer[i] = baseSpeed * ratio;
     }

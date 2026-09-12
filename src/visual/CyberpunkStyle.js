@@ -112,14 +112,14 @@ export function getPaletteThreeColor(index, orbitIndex = 0) {
 
 /**
  * Create a trail line for a moving object.
- * Returns { line, positions, colors, head, maxPoints, push(x, y, z) }
+ * Returns { line, positions, count, maxPoints, push(x, y, z), clear() }
  */
 export function createTrail(maxPoints, color) {
   const positions = new Float32Array(maxPoints * 3);
-  const alphas = new Float32Array(maxPoints);
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  geometry.setAttribute('position', posAttr);
   geometry.setDrawRange(0, 0);
 
   const threeColor = new THREE.Color(color);
@@ -133,62 +133,44 @@ export function createTrail(maxPoints, color) {
   });
 
   const line = new THREE.Line(geometry, material);
+  // Positions are rewritten every frame; a bounding sphere computed from the zeroed buffer would cull the whole trail
+  line.frustumCulled = false;
 
-  const trail = {
+  return {
     line,
     positions,
-    alphas,
-    head: 0,
     count: 0,
     maxPoints,
 
+    // Points stay ordered oldest → newest so the buffer can be drawn as-is
     push(x, y, z) {
-      const i = this.head * 3;
-      this.positions[i] = x;
-      this.positions[i + 1] = y;
-      this.positions[i + 2] = z;
-      this.head = (this.head + 1) % this.maxPoints;
-      if (this.count < this.maxPoints) this.count++;
-      this._updateGeometry();
-    },
-
-    _updateGeometry() {
-      // Reorder positions into a contiguous array for rendering
-      const ordered = new Float32Array(this.count * 3);
-      for (let i = 0; i < this.count; i++) {
-        const srcIdx = ((this.head - this.count + i + this.maxPoints) % this.maxPoints) * 3;
-        ordered[i * 3] = this.positions[srcIdx];
-        ordered[i * 3 + 1] = this.positions[srcIdx + 1];
-        ordered[i * 3 + 2] = this.positions[srcIdx + 2];
+      if (this.count < this.maxPoints) {
+        this.count++;
+      } else {
+        positions.copyWithin(0, 3);
       }
-      this.line.geometry.attributes.position.array.set(ordered);
-      this.line.geometry.attributes.position.needsUpdate = true;
-      this.line.geometry.setDrawRange(0, this.count);
+      const i = (this.count - 1) * 3;
+      positions[i] = x;
+      positions[i + 1] = y;
+      positions[i + 2] = z;
+      posAttr.needsUpdate = true;
+      geometry.setDrawRange(0, this.count);
 
-      // For dashed trails: use fixed evenly-spaced distances so the dash
-      // pattern stays locked in place instead of jittering as points shift
-      if (this._isDashed) {
-        const spacing = 0.1; // fixed distance per point — controls dash density
-        let distAttr = this.line.geometry.getAttribute('lineDistance');
-        if (!distAttr || distAttr.count < this.maxPoints) {
-          distAttr = new THREE.BufferAttribute(new Float32Array(this.maxPoints), 1);
-          this.line.geometry.setAttribute('lineDistance', distAttr);
-        }
-        for (let i = 0; i < this.count; i++) {
-          distAttr.array[i] = i * spacing;
-        }
-        distAttr.needsUpdate = true;
+      // For dashed trails: fixed evenly-spaced distances keep the dash
+      // pattern locked in place instead of jittering as points shift
+      if (this._isDashed && !geometry.getAttribute('lineDistance')) {
+        const spacing = 0.1;
+        const distances = new Float32Array(this.maxPoints);
+        for (let k = 0; k < this.maxPoints; k++) distances[k] = k * spacing;
+        geometry.setAttribute('lineDistance', new THREE.BufferAttribute(distances, 1));
       }
     },
 
     clear() {
-      this.head = 0;
       this.count = 0;
-      this.line.geometry.setDrawRange(0, 0);
+      geometry.setDrawRange(0, 0);
     },
   };
-
-  return trail;
 }
 
 // ── Flash Sprite ─────────────────────────────────────────────────
@@ -273,7 +255,7 @@ export class FlashPool {
       }
       // Smooth fade in then fade out — no hard pop, no strobe
       const fadeIn = Math.min(1, t / 0.15);
-      const fadeOut = 1 - ((t - 0.1) / 0.9) ** 1.5;
+      const fadeOut = 1 - (Math.max(0, t - 0.1) / 0.9) ** 1.5;
       const envelope = fadeIn * Math.max(0, fadeOut);
       const scale = flash.maxScale * envelope;
       flash.sprite.scale.set(scale, scale, 1);
@@ -625,6 +607,12 @@ export class CenterNebula {
     this._nanoPoints = new THREE.Points(this._nanoGeometry, this._nanoMaterial);
     this._nanoPoints.layers.enable(1);
     parentGroup.add(this._nanoPoints);
+
+    // Buffers start zeroed, so computed bounding spheres would collapse to a
+    // point at the origin and cull these layers whenever the origin leaves view
+    for (const points of [this._points, this._dustPoints, this._cloudPoints, this._nanoPoints]) {
+      points.frustumCulled = false;
+    }
 
     this._nanoParticles = [];
     for (let i = 0; i < MAX_NANO_PARTICLES; i++) {

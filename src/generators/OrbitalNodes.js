@@ -19,6 +19,10 @@ import {
 
 const TWO_PI = Math.PI * 2;
 
+// Scratch colors for the per-frame tail blend
+const _tailColor = new THREE.Color();
+const _mixColor = new THREE.Color();
+
 const DEFAULT_PARAMS = {
   nodeCount: 5,
   radius: 3.0,
@@ -83,8 +87,9 @@ export class OrbitalNodes extends Generator {
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
       node.prevAngle = node.angle;
-      const speed = speeds ? speeds[i] : node.speed;
-      node.angle = normalizeAngle(node.angle + node.dir * speed * deltaTime);
+      // Triggers and mappings read node.speed, so it must carry the algorithm's live value
+      if (speeds) node.speed = speeds[i];
+      node.angle = normalizeAngle(node.angle + node.dir * node.speed * deltaTime);
     }
 
     // 2. Update mesh positions & trails
@@ -169,13 +174,13 @@ export class OrbitalNodes extends Generator {
           node.tailPosAttr.needsUpdate = true;
 
           // Blend tail color with crossing history
-          const baseC = new THREE.Color(node.colorHex);
+          _tailColor.set(node.colorHex);
           if (node.crossingHistory.length > 0) {
-            const mixC = new THREE.Color(node.crossingHistory[0]);
+            _mixColor.set(node.crossingHistory[0]);
             const blend = 0.3 / node.crossingHistory.length;
-            baseC.lerp(mixC, 0.15 + blend);
+            _tailColor.lerp(_mixColor, 0.15 + blend);
           }
-          node.tailLine.material.color.copy(baseC);
+          node.tailLine.material.color.copy(_tailColor);
           node.tailLine.material.opacity = 0.5;
         }
       }
@@ -211,7 +216,7 @@ export class OrbitalNodes extends Generator {
       }
       // Fade in fast, fade out smooth
       const fadeIn = Math.min(1, t / 0.15);
-      const fadeOut = 1 - ((t - 0.1) / 0.9) ** 1.5;
+      const fadeOut = 1 - (Math.max(0, t - 0.1) / 0.9) ** 1.5;
       const envelope = fadeIn * Math.max(0, fadeOut);
       cf.sprite.scale.setScalar(cf.maxScale * envelope);
       cf.sprite.material.opacity = cf.maxOpacity * envelope;
@@ -279,26 +284,8 @@ export class OrbitalNodes extends Generator {
       this._nebula.dispose();
     }
     this._nebula = null;
-    for (const node of this.nodes) {
-      if (node.trail) {
-        this._group.remove(node.trail.line);
-      }
-    }
     this.sceneManager.scene.remove(this._group);
-
-    // Dispose geometries and materials
-    this._group.traverse(child => {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) {
-        if (Array.isArray(child.material)) {
-          child.material.forEach(m => m.dispose());
-        } else {
-          child.material.dispose();
-        }
-      }
-    });
-
-    this._group.clear();
+    this._disposeGroupContents();
     this.nodes = [];
     this.cooldowns.clear();
   }
@@ -390,8 +377,8 @@ export class OrbitalNodes extends Generator {
       return;
     }
 
-    // Only nodeCount and trailLength truly need full rebuild
-    const needsRebuild = ['nodeCount', 'trailLength', 'trailStyle', 'nodeStyle'];
+    // Params baked into node or trail geometry need a full rebuild
+    const needsRebuild = ['nodeCount', 'trailLength', 'trailStyle', 'nodeStyle', 'nodeSize'];
     if (needsRebuild.includes(key)) {
       this._rebuild();
     } else if (key === 'radius') {
@@ -399,16 +386,11 @@ export class OrbitalNodes extends Generator {
       // Rebuild orbit ring visual only
       if (this.orbitRing) {
         this._group.remove(this.orbitRing);
+        this.orbitRing.geometry.dispose();
+        this.orbitRing.material.dispose();
         this.orbitRing = createOrbitRing(value, 0x333366);
         this.orbitRing.visible = this.params.showOrbitRing;
         this._group.add(this.orbitRing);
-      }
-    } else if (key === 'nodeSize') {
-      // Live update: scale all node meshes
-      const scaleFactor = value / 0.15; // normalize to default
-      for (const node of this.nodes) {
-        node.mesh.geometry.dispose();
-        node.mesh.geometry = new THREE.SphereGeometry(value, 24, 16);
       }
     } else if (key === 'direction') {
       // Live update: recalculate per-node directions
@@ -455,6 +437,11 @@ export class OrbitalNodes extends Generator {
     if (algorithmId !== 'none') {
       this._motionAlgo = createAlgorithm(algorithmId);
       this._motionAlgo.init(this.nodes, this.params);
+    } else {
+      // Algorithms write live speeds into node.speed; restore the static ratios
+      for (let i = 0; i < this.nodes.length; i++) {
+        this.nodes[i].speed = this.params.baseSpeed * (this.params.speedRatios[i] || (i + 1));
+      }
     }
     // UI rebuild happens via GeneratorPanel detecting the select change
   }
@@ -462,11 +449,9 @@ export class OrbitalNodes extends Generator {
   // ── Internal: Build ────────────────────────────────────────────
 
   _rebuild() {
-    // Preserve the group's parent
-    const wasRunning = this.nodes.length > 0;
-    if (wasRunning) {
+    const prevAngles = this.nodes.map(n => n.angle);
+    if (this.nodes.length > 0) {
       this.sparklePool.dispose();
-      if (this._triggerMethod) this._triggerMethod.dispose();
       // Only dispose nebula if we own it
       if (this._nebula && !this._sharedNebula) {
         if (this._nebula._material) this.sceneManager.unregisterSoftParticleMaterial(this._nebula._material);
@@ -474,7 +459,7 @@ export class OrbitalNodes extends Generator {
         this._nebula.dispose();
         this._nebula = null;
       }
-      this._group.clear();
+      this._disposeGroupContents();
     }
     this.nodes = [];
     this.cooldowns.clear();
@@ -482,14 +467,32 @@ export class OrbitalNodes extends Generator {
 
     this.sparklePool = new SparkleBurstPool(this._group);
     if (!this._sharedNebula) this._nebula = null;
-    this._triggerMethod = createTrigger(this.params.triggerMethod);
-    this._noteMapping = createMapping(this.params.noteMapping);
-    this._buildNodes();
+    // Existing trigger/mapping instances are kept so their user-set params
+    // survive; _buildNodes re-inits them against the new nodes
+    if (!this._triggerMethod) this._triggerMethod = createTrigger(this.params.triggerMethod);
+    if (!this._noteMapping) this._noteMapping = createMapping(this.params.noteMapping);
+    this._buildNodes(prevAngles);
     this._buildOrbitRing();
     this._buildConnectionLines();
   }
 
-  _buildNodes() {
+  /** Remove every object from this orbit's group and free its GPU resources. */
+  _disposeGroupContents() {
+    this._group.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
+    this._group.clear();
+  }
+
+  /** @param {number[]} [prevAngles] - angles to keep for surviving nodes, so a rebuild doesn't snap them back */
+  _buildNodes(prevAngles = []) {
     const { nodeCount, radius, baseSpeed, speedRatios, nodeSize, direction, trailLength, nodeStyle } = this.params;
 
     for (let i = 0; i < nodeCount; i++) {
@@ -531,7 +534,7 @@ export class OrbitalNodes extends Generator {
         }
       }
 
-      const angle = (i / nodeCount) * TWO_PI;
+      const angle = prevAngles[i] ?? (i / nodeCount) * TWO_PI;
       const speed = baseSpeed * (speedRatios[i] || (i + 1));
       const dir = this._resolveDirection(direction, i);
 
@@ -576,6 +579,7 @@ export class OrbitalNodes extends Generator {
         depthWrite: false,
       });
       const tailLine = new THREE.LineSegments(tailGeo, tailMat);
+      tailLine.frustumCulled = false; // rewritten every frame from a zeroed buffer
       tailLine.visible = this.params.tailLength > 0;
       this._group.add(tailLine);
 
@@ -665,6 +669,7 @@ export class OrbitalNodes extends Generator {
     });
 
     this.connectionLines = new THREE.LineSegments(geometry, material);
+    this.connectionLines.frustumCulled = false; // rewritten every frame from a zeroed buffer
     this.connectionLines.visible = this.params.showConnectionLines;
     this._group.add(this.connectionLines);
   }
