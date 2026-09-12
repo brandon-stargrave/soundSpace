@@ -6,6 +6,7 @@ import { MidiOscPanel } from './MidiOscPanel.js';
 import { HarmonicOrbitPanel } from './HarmonicOrbitPanel.js';
 import { RecordPanel } from './RecordPanel.js';
 import { Presets } from './Presets.js';
+import { OrbitalNodes } from '../generators/OrbitalNodes.js';
 
 const MAX_ORBITS = 5;
 
@@ -47,8 +48,8 @@ export class ConfigPanel {
 
     // Harmonic Orbit (global — polygon root transposer + pad/bass drones).
     // Placed right after the Generator section so it reads as the 2nd panel.
-    const harmonic = new HarmonicOrbitPanel(this.engine);
-    this.container.appendChild(harmonic.render());
+    this._harmonicPanel = new HarmonicOrbitPanel(this.engine);
+    this.container.appendChild(this._harmonicPanel.render());
 
     // Remaining per-orbit sections (Scale + Synth) — rebuilt on orbit change.
     this._sectionContainer = document.createElement('div');
@@ -75,6 +76,11 @@ export class ConfigPanel {
       this._selectedOrbit = 0;
       this._refreshOrbitBar();
       this._buildSections();
+      // The Harmonic Orbit panel is built once, so rebuild it to show the loaded values
+      const oldHarmonic = this._harmonicPanel.el;
+      const freshHarmonic = this._harmonicPanel.render();
+      freshHarmonic.open = oldHarmonic.open;
+      oldHarmonic.replaceWith(freshHarmonic);
     };
     this.container.appendChild(this.presets.render());
 
@@ -190,11 +196,11 @@ export class ConfigPanel {
   }
 
   async _addOrbit() {
-    const { OrbitalNodes } = await import('../generators/OrbitalNodes.js');
     await this.engine.addOrbit(OrbitalNodes);
     this._selectedOrbit = this.engine.generators.length - 1;
     this._refreshOrbitBar();
     this._buildSections();
+    this._harmonicPanel.refreshSyncSources();
   }
 
   _copyOrbit() {
@@ -260,10 +266,12 @@ export class ConfigPanel {
 
   _removeOrbit() {
     if (this.engine.generators.length <= 1) return;
-    this.engine.removeGenerator(this._selectedOrbit);
-    this._selectedOrbit = Math.min(this._selectedOrbit, this.engine.generators.length - 1);
+    const removed = this._selectedOrbit;
+    this.engine.removeGenerator(removed);
+    this._selectedOrbit = Math.min(removed, this.engine.generators.length - 1);
     this._refreshOrbitBar();
     this._buildSections();
+    this._harmonicPanel.refreshSyncSources(removed);
   }
 
   _createTransportControls() {

@@ -73,16 +73,13 @@ export class HarmonicOrbitPanel {
     });
     body.appendChild(this._bpmRow);
 
-    const orbitOptions = Array.from(
-      { length: Math.max(this.engine.generators.length, 1) },
-      (_, i) => String(i)
-    );
     this._syncSourceRow = this._createSelectRow(
       'Sync Source Orbit',
-      orbitOptions,
-      String(p.syncSourceIndex),
+      [],
+      null,
       (val) => h.setParam('syncSourceIndex', parseInt(val, 10))
     );
+    this.refreshSyncSources();
     body.appendChild(this._syncSourceRow);
     // Sync ratio — extended range 0.125 .. 32 (5 octaves of slowing factor)
     this._syncRatioRow = this._createRangeRow('Sync Ratio', 0.125, 32, 0.125, p.syncRatio, (val) => {
@@ -284,6 +281,31 @@ export class HarmonicOrbitPanel {
     show(this._bpmRow, mode === 'free');
     show(this._syncSourceRow, mode === 'periodSync');
     show(this._syncRatioRow, mode === 'periodSync');
+  }
+
+  /**
+   * Re-list the orbits in the Sync Source dropdown. Call after orbits are
+   * added or removed; pass the removed index so the source keeps pointing at
+   * the same orbit when the ones before it shift down.
+   */
+  refreshSyncSources(removedIndex = null) {
+    const select = this._syncSourceRow?.querySelector('select');
+    if (!select) return;
+    const h = this.engine.harmonicOrbit;
+    const count = Math.max(this.engine.generators.length, 1);
+    let idx = h.params.syncSourceIndex;
+    if (removedIndex !== null && removedIndex < idx) idx--;
+    idx = Math.min(idx, count - 1);
+    if (idx !== h.params.syncSourceIndex) h.setParam('syncSourceIndex', idx);
+
+    select.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const option = document.createElement('option');
+      option.value = String(i);
+      option.textContent = String(i + 1); // matches the 1-based orbit bar
+      select.appendChild(option);
+    }
+    select.value = String(idx);
   }
 
   // ── Helpers ──

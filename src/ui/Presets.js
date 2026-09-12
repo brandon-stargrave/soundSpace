@@ -19,7 +19,7 @@ export class Presets {
     const body = document.createElement('div');
     body.className = 'section-body';
 
-    // Save / Load buttons
+    // Save / Load / Demo buttons
     const btnRow = document.createElement('div');
     btnRow.className = 'btn-row';
 
@@ -33,8 +33,15 @@ export class Presets {
     loadBtn.textContent = 'Load';
     loadBtn.addEventListener('click', () => this._load());
 
+    const demoBtn = document.createElement('button');
+    demoBtn.className = 'btn';
+    demoBtn.textContent = 'Demo';
+    demoBtn.title = 'Load the bundled niceStart preset';
+    demoBtn.addEventListener('click', () => this._loadDemo());
+
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(loadBtn);
+    btnRow.appendChild(demoBtn);
     body.appendChild(btnRow);
 
     // Hidden file input for loading
@@ -77,11 +84,7 @@ export class Presets {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const data = JSON.parse(e.target.result);
-        await this.engine.deserialize(data);
-        // Notify ConfigPanel to rebuild UI if callback is set
-        if (this._onLoad) this._onLoad();
-        console.log('Preset loaded:', file.name);
+        await this._apply(JSON.parse(e.target.result), file.name);
       } catch (err) {
         console.error('Failed to load preset:', err);
       }
@@ -89,5 +92,22 @@ export class Presets {
     reader.readAsText(file);
 
     this._fileInput.value = '';
+  }
+
+  async _loadDemo() {
+    try {
+      // Fetched on demand so the preset stays out of the main bundle
+      const { default: data } = await import('../../presets/niceStart.json');
+      await this._apply(structuredClone(data), 'niceStart.json');
+    } catch (err) {
+      console.error('Failed to load demo preset:', err);
+    }
+  }
+
+  async _apply(data, name) {
+    await this.engine.deserialize(data);
+    // Notify ConfigPanel to rebuild UI if callback is set
+    if (this._onLoad) this._onLoad();
+    console.log('Preset loaded:', name);
   }
 }

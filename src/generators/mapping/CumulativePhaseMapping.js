@@ -16,6 +16,7 @@ export class CumulativePhaseMapping extends NoteMapping {
       direction: 'ascending',
     };
     this._accumulators = [];
+    this._prevAngles = [];
   }
 
   init(nodes, generatorParams) {
@@ -24,24 +25,25 @@ export class CumulativePhaseMapping extends NoteMapping {
     this._prevAngles = nodes.map(n => n.angle);
   }
 
-  mapValue(trig, nodes, generatorParams) {
-    const { nodeIndexA } = trig;
-
-    // Update accumulators for all nodes (they move between triggers)
+  // Accumulate every frame: a node can travel more than half a lap between
+  // triggers, and sampling only at triggers would wrap that travel away
+  update(deltaTime, nodes, generatorParams) {
     for (let i = 0; i < nodes.length; i++) {
       if (i >= this._accumulators.length) {
         this._accumulators.push(0);
         this._prevAngles.push(nodes[i].angle);
       }
-      let delta = nodes[i].angle - (this._prevAngles[i] || 0);
+      let delta = nodes[i].angle - this._prevAngles[i];
       // Handle wrapping
       if (delta > Math.PI) delta -= TWO_PI;
       if (delta < -Math.PI) delta += TWO_PI;
       this._accumulators[i] += Math.abs(delta);
       this._prevAngles[i] = nodes[i].angle;
     }
+  }
 
-    const totalAngle = this._accumulators[nodeIndexA] || 0;
+  mapValue(trig, nodes, generatorParams) {
+    const totalAngle = this._accumulators[trig.nodeIndexA] || 0;
     const cycleRadians = this.params.cycleLength * TWO_PI;
     let phase = (totalAngle % cycleRadians) / cycleRadians; // 0-1
 

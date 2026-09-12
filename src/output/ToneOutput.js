@@ -1,6 +1,7 @@
 import * as Tone from 'tone';
 import { DEFAULT_SYNTH_CONFIG } from '../util/constants.js';
 import { clamp } from '../util/math.js';
+import { rampParam } from '../util/audio.js';
 
 /**
  * Local audio output using Tone.js.
@@ -269,7 +270,7 @@ export class ToneOutput {
     if (!effect) return;
     try {
       if (paramName === 'wet') {
-        if (effect.wet) effect.wet.value = value;
+        rampParam(effect.wet, value);
       } else if (paramName === 'decay' && effectType === 'Reverb') {
         // Reverb decay requires rebuilding impulse response
         effect.decay = value;
@@ -278,32 +279,32 @@ export class ToneOutput {
         effect.preDelay = value;
         effect.generate && effect.generate();
       } else if (paramName === 'frequency' && effectType === 'Filter') {
-        effect.frequency.value = value;
+        rampParam(effect.frequency, value);
       } else if (paramName === 'Q' && effectType === 'Filter') {
-        effect.Q.value = value;
+        rampParam(effect.Q, value);
       } else if (paramName === 'type' && effectType === 'Filter') {
         effect.type = value;
       } else if (paramName === 'rolloff' && effectType === 'Filter') {
         effect.rolloff = value;
       } else if (effectType === 'Chorus' && paramName === 'frequency') {
-        effect.frequency.value = value;
+        rampParam(effect.frequency, value);
       } else if (effectType === 'Chorus' && paramName === 'delayTime') {
         effect.delayTime = value;
       } else if (effectType === 'Chorus' && paramName === 'depth') {
         effect.depth = value;
       } else if (effectType === 'EQ3' && (paramName === 'low' || paramName === 'mid' || paramName === 'high')) {
-        effect[paramName].value = value;
+        rampParam(effect[paramName], value);
       } else if (paramName === 'lowFrequency' && effectType === 'EQ3') {
-        effect.lowFrequency.value = value;
+        rampParam(effect.lowFrequency, value);
       } else if (paramName === 'highFrequency' && effectType === 'EQ3') {
-        effect.highFrequency.value = value;
+        rampParam(effect.highFrequency, value);
       } else if (paramName === 'feedback') {
-        effect.feedback.value = value;
+        rampParam(effect.feedback, value);
       } else if (paramName === 'delayTime') {
-        effect.delayTime.value = value;
+        rampParam(effect.delayTime, value);
       } else if (effect[paramName] !== undefined) {
         if (effect[paramName] && effect[paramName].value !== undefined) {
-          effect[paramName].value = value;
+          rampParam(effect[paramName], value);
         } else {
           effect[paramName] = value;
         }

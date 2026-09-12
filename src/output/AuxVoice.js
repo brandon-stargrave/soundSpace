@@ -1,7 +1,8 @@
 import * as Tone from 'tone';
+import { rampParam } from '../util/audio.js';
 
 /**
- * AuxVoice — sustained-drone synth for the Harmonic Orbit pad + bass voices.
+ * AuxVoice —sustained-drone synth for the Harmonic Orbit pad + bass voices.
  *
  * Uses an explicit voice pool of individual synth instances (same pattern as
  * the main orbit `ToneOutput`) rather than wrapping `Tone.PolySynth`. Each
@@ -173,7 +174,7 @@ export class AuxVoice {
     if (!effect) return;
     try {
       if (paramName === 'wet') {
-        if (effect.wet) effect.wet.value = value;
+        rampParam(effect.wet, value);
       } else if (paramName === 'decay' && effectType === 'Reverb') {
         effect.decay = value;
         effect.generate && effect.generate();
@@ -181,28 +182,28 @@ export class AuxVoice {
         effect.preDelay = value;
         effect.generate && effect.generate();
       } else if (paramName === 'frequency' && effectType === 'Filter') {
-        effect.frequency.value = value;
+        rampParam(effect.frequency, value);
       } else if (paramName === 'Q' && effectType === 'Filter') {
-        effect.Q.value = value;
+        rampParam(effect.Q, value);
       } else if (paramName === 'type' && effectType === 'Filter') {
         effect.type = value;
       } else if (paramName === 'rolloff' && effectType === 'Filter') {
         effect.rolloff = value;
       } else if (effectType === 'EQ3' && (paramName === 'low' || paramName === 'mid' || paramName === 'high')) {
-        effect[paramName].value = value;
+        rampParam(effect[paramName], value);
       } else if (effectType === 'EQ3' && paramName === 'lowFrequency') {
-        effect.lowFrequency.value = value;
+        rampParam(effect.lowFrequency, value);
       } else if (effectType === 'EQ3' && paramName === 'highFrequency') {
-        effect.highFrequency.value = value;
+        rampParam(effect.highFrequency, value);
       } else if (paramName === 'feedback') {
-        if (effect.feedback?.value !== undefined) effect.feedback.value = value;
+        if (effect.feedback?.value !== undefined) rampParam(effect.feedback, value);
         else effect.feedback = value;
       } else if (paramName === 'delayTime') {
-        if (effect.delayTime?.value !== undefined) effect.delayTime.value = value;
+        if (effect.delayTime?.value !== undefined) rampParam(effect.delayTime, value);
         else effect.delayTime = value;
       } else if (effect[paramName] !== undefined) {
         if (effect[paramName] && effect[paramName].value !== undefined) {
-          effect[paramName].value = value;
+          rampParam(effect[paramName], value);
         } else {
           effect[paramName] = value;
         }

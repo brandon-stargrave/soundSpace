@@ -181,11 +181,7 @@ export class HarmonicOrbit {
     // _onVertexCrossed so the user still sees the trail animating.
 
     // Resolve effective radius — match first orbit if auto
-    const r = this._resolveRadius();
-    if (r !== this._appliedRadius) {
-      this._appliedRadius = r;
-      this._buildVisuals(); // rebuild polygon + reposition traveler
-    }
+    if (this._resolveRadius() !== this._appliedRadius) this._applyRadius();
 
     // Advance cycle position
     if (this.params.speedMode === 'periodSync') {
@@ -475,12 +471,6 @@ export class HarmonicOrbit {
     this._holoSpheres = [];
     for (let i = 0; i < totalSamples; i++) {
       const t = i / totalSamples; // 0..1 cycle position
-      const edgeFloat = t * sides;
-      const edgeIdx = Math.floor(edgeFloat) % sides;
-      const local = edgeFloat - Math.floor(edgeFloat);
-      const a = polygonVertexPos(r, sides, edgeIdx);
-      const b = polygonVertexPos(r, sides, (edgeIdx + 1) % sides);
-
       const material = new THREE.MeshBasicMaterial({
         color: HOLO_COLOR,
         transparent: true,
@@ -489,7 +479,7 @@ export class HarmonicOrbit {
         blending: THREE.AdditiveBlending,
       });
       const mesh = new THREE.Mesh(this._holoSphereGeo, material);
-      mesh.position.set(a.x + (b.x - a.x) * local, a.y + (b.y - a.y) * local, 0);
+      this._perimeterPos(r, sides, t, mesh.position);
       mesh.scale.setScalar(HOLO_BASE_SCALE);
       this._group.add(mesh);
       this._holoSpheres.push({ mesh, cyclePos: t });
@@ -501,6 +491,7 @@ export class HarmonicOrbit {
     // Each solid is sized/faded by its voice's own volume (not the mix).
     this._traveler = new THREE.Group();
     const size = this.params.travelerSize;
+    this._builtTravelerSize = size;
 
     // Bass traveler sits slightly bigger than the pad traveler to give the
     // stella octangula enough presence next to its denser inner companion.
@@ -625,6 +616,28 @@ export class HarmonicOrbit {
     this._traveler = null;
   }
 
+  /** Point on the polygon perimeter at cycle position t (0..1), written into out's x and y. */
+  _perimeterPos(r, sides, t, out) {
+    const edgeFloat = t * sides;
+    const edgeIdx = Math.floor(edgeFloat) % sides;
+    const local = edgeFloat - Math.floor(edgeFloat);
+    const a = polygonVertexPos(r, sides, edgeIdx);
+    const b = polygonVertexPos(r, sides, (edgeIdx + 1) % sides);
+    out.x = a.x + (b.x - a.x) * local;
+    out.y = a.y + (b.y - a.y) * local;
+    return out;
+  }
+
+  /** Move the existing trail and traveler to the current radius instead of rebuilding them. */
+  _applyRadius() {
+    const r = this._resolveRadius();
+    this._appliedRadius = r;
+    for (const s of this._holoSpheres) {
+      this._perimeterPos(r, this.params.sides, s.cyclePos, s.mesh.position);
+    }
+    this._updateTravelerPosition(this._cyclePos);
+  }
+
   _updateTravelerPosition(cyclePos) {
     if (!this._traveler) return;
     const sides = this.params.sides;
@@ -730,9 +743,14 @@ export class HarmonicOrbit {
         }
         break;
       case 'sides':
-      case 'radius':
-      case 'travelerSize':
         this._buildVisuals();
+        break;
+      case 'radius':
+        this._applyRadius();
+        break;
+      case 'travelerSize':
+        // The wireframe geometry was sized at build time, so scale the group
+        if (this._traveler) this._traveler.scale.setScalar(value / this._builtTravelerSize);
         break;
       case 'progressionId':
         this._progression = new ProgressionWalker(value);

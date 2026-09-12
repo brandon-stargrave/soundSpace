@@ -8,6 +8,7 @@ import { MidiOutput } from '../output/MidiOutput.js';
 import { OscOutput } from '../output/OscOutput.js';
 import { CenterNebula } from '../visual/CyberpunkStyle.js';
 import { HarmonicOrbit } from './HarmonicOrbit.js';
+import { OrbitalNodes } from '../generators/OrbitalNodes.js';
 import { DEFAULT_SCALE_CONFIG, DEFAULT_SYNTH_CONFIG } from '../util/constants.js';
 
 // Scratch vectors for listener orientation — avoid per-frame allocation
@@ -419,7 +420,7 @@ export class Engine {
   }
 
   /** Restore engine state from saved data */
-  async deserialize(data, GeneratorClass) {
+  async deserialize(data, GeneratorClass = OrbitalNodes) {
     // Camera
     if (data.camera) {
       const p = data.camera.position;
@@ -435,12 +436,6 @@ export class Engine {
       if (data.spatial.axis) {
         this.setSpatialAxis(data.spatial.axis);
       }
-    }
-
-    // Need GeneratorClass to recreate orbits
-    if (!GeneratorClass) {
-      const mod = await import('../generators/OrbitalNodes.js');
-      GeneratorClass = mod.OrbitalNodes;
     }
 
     // New multi-orbit format

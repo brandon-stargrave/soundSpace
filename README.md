@@ -283,8 +283,8 @@ High resolutions can lower the frame rate while recording.
 
 **Save** downloads everything as a `.json` file: every orbit's generator,
 scale, and synth settings, the Harmonic Orbit, spatial audio, and the camera
-position. **Load** restores it. The `presets/` folder has examples to start
-from, such as `presets/niceStart.json`.
+position. **Load** restores it. **Demo** loads `presets/niceStart.json`, a good
+place to start exploring; the `presets/` folder has more examples.
 
 ### Project structure
 

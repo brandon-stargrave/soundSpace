@@ -1117,7 +1117,33 @@ export class SceneManager {
   dispose() {
     window.removeEventListener('resize', this._onResize);
     this.controls.dispose();
-    this.renderer.dispose();
+
+    // Free every geometry, material, and texture still attached to the scene
+    const textures = new Set();
+    this.scene.traverse((obj) => {
+      obj.geometry?.dispose();
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of materials) {
+        if (!mat) continue;
+        for (const value of Object.values(mat)) if (value?.isTexture) textures.add(value);
+        for (const u of Object.values(mat.uniforms || {})) if (u?.value?.isTexture) textures.add(u.value);
+        mat.dispose();
+      }
+    });
+    if (this._spikeTexture) textures.add(this._spikeTexture);
+    for (const tex of textures) tex.dispose();
+
+    this.scene.environment = null;
+    this._envMap?.dispose();
+    this._nebulaRT?.dispose();
+    this._softParticleMaterials.length = 0;
+
+    // Passes own their render targets and fullscreen quads; the composer only frees its own two
+    for (const pass of this.composer.passes) pass.dispose?.();
     this.composer.dispose();
+
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    this.renderer.domElement.remove();
   }
 }

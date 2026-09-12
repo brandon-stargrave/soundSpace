@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Generator } from '../core/Generator.js';
 import { TriggerEvent } from '../core/TriggerEvent.js';
-import { normalizeAngle, angleDelta, polarToCartesian, clamp } from '../util/math.js';
+import { normalizeAngle, polarToCartesian, clamp } from '../util/math.js';
 import { getAlgorithmIds, createAlgorithm } from './motion/MotionRegistry.js';
 import { getTriggerIds, createTrigger } from './triggers/TriggerRegistry.js';
 import { getMappingIds, createMapping } from './mapping/MappingRegistry.js';
@@ -51,7 +51,6 @@ export class OrbitalNodes extends Generator {
     super('OrbitalNodes', sceneManager, outputRouter);
     this.params = { ...DEFAULT_PARAMS, ...config };
     this.nodes = [];
-    this.cooldowns = new Map();
     this.sparklePool = null;
     this._nebula = null;
     this._centerPulse = 0;
@@ -191,7 +190,8 @@ export class OrbitalNodes extends Generator {
       this._updateConnectionLines();
     }
 
-    // 4. Detect triggers via pluggable method
+    // 4. Detect triggers via pluggable method (the mapping sees this frame's motion first)
+    if (this._noteMapping) this._noteMapping.update(deltaTime, this.nodes, this.params);
     const now = performance.now();
     if (this._triggerMethod) {
       const triggers = this._triggerMethod.detectTriggers(deltaTime, this.nodes, this.params);
@@ -287,7 +287,6 @@ export class OrbitalNodes extends Generator {
     this.sceneManager.scene.remove(this._group);
     this._disposeGroupContents();
     this.nodes = [];
-    this.cooldowns.clear();
   }
 
   // ── Parameter Descriptors ──────────────────────────────────────
@@ -462,7 +461,6 @@ export class OrbitalNodes extends Generator {
       this._disposeGroupContents();
     }
     this.nodes = [];
-    this.cooldowns.clear();
     this._centerPulse = 0;
 
     this.sparklePool = new SparkleBurstPool(this._group);
@@ -704,38 +702,7 @@ export class OrbitalNodes extends Generator {
     }
   }
 
-  // ── Internal: Crossing Detection ───────────────────────────────
-
-  _detectCrossing(i, j, now) {
-    const a = this.nodes[i];
-    const b = this.nodes[j];
-
-    // Physical proximity check: nodes must be close on the circle
-    const ax = a.mesh.position.x;
-    const ay = a.mesh.position.y;
-    const bx = b.mesh.position.x;
-    const by = b.mesh.position.y;
-    const dx = ax - bx;
-    const dy = ay - by;
-    const distSq = dx * dx + dy * dy;
-    const threshold = this.params.nodeSize * 6; // collision radius
-    if (distSq > threshold * threshold) return false;
-
-    // Angular crossing: delta changed sign (they passed through each other)
-    const prevDelta = angleDelta(a.prevAngle, b.prevAngle);
-    const currDelta = angleDelta(a.angle, b.angle);
-    if (!((prevDelta > 0 && currDelta <= 0) || (prevDelta < 0 && currDelta >= 0))) {
-      return false;
-    }
-
-    // Check cooldown
-    const pairKey = `${i}-${j}`;
-    const lastTrigger = this.cooldowns.get(pairKey) || 0;
-    if (now - lastTrigger < this.params.cooldownMs) return false;
-
-    this.cooldowns.set(pairKey, now);
-    return true;
-  }
+  // ── Internal: Trigger Emission ─────────────────────────────────
 
   /**
    * Unified trigger handler for pluggable trigger methods.
@@ -824,71 +791,6 @@ export class OrbitalNodes extends Generator {
     }
 
     // Route to audio/MIDI/OSC
-    this.outputRouter.route(event);
-  }
-
-  // Legacy method — kept for reference but no longer called by update loop
-  _emitTrigger(i, j, now) {
-    const a = this.nodes[i];
-    const b = this.nodes[j];
-
-    // Compute crossing position from rendered mesh positions (includes ring offset)
-    const crossX = (a.mesh.position.x + b.mesh.position.x) / 2;
-    const crossY = (a.mesh.position.y + b.mesh.position.y) / 2;
-
-    // Compute rawValue based on noteMapping mode
-    let rawValue;
-    switch (this.params.noteMapping) {
-      case 'angle':
-        rawValue = normalizeAngle((a.angle + b.angle) / 2) / TWO_PI;
-        break;
-      case 'nodeIndex':
-        rawValue = (i + j) / (this.nodes.length * 2);
-        break;
-      case 'velocity':
-        const relSpeed = Math.abs(a.speed * a.dir - b.speed * b.dir);
-        const maxRelSpeed = this.params.baseSpeed * 20; // rough normalization
-        rawValue = clamp(relSpeed / maxRelSpeed, 0, 1);
-        break;
-      default:
-        rawValue = normalizeAngle((a.angle + b.angle) / 2) / TWO_PI;
-    }
-
-    // Velocity based on relative angular speed
-    const relativeSpeed = Math.abs(a.speed * a.dir - b.speed * b.dir);
-    const maxSpeed = this.params.baseSpeed * 10;
-    const velocity = clamp(relativeSpeed / maxSpeed, 0.2, 1.0);
-
-    // Emit trigger event
-    const event = new TriggerEvent({
-      generatorId: this.id,
-      triggerId: i * 100 + j,
-      rawValue,
-      velocity,
-      position: { x: crossX, y: crossY },
-      timestamp: now,
-    });
-
-    // Bloom pulse on both triggering nodes
-    a.bloomPulse = velocity;
-    b.bloomPulse = velocity;
-
-    // Star twinkle
-    this.sceneManager.triggerStarTwinkle(velocity * 0.6);
-
-    // Sparkle burst from each node
-    const meshA = a.mesh.position;
-    const meshB = b.mesh.position;
-    this.sparklePool.spawn(meshA.x, meshA.y, meshA.z, a.colorHex, 0.5, 1.2 * velocity + 0.4);
-    this.sparklePool.spawn(meshB.x, meshB.y, meshB.z, b.colorHex, 0.5, 1.2 * velocity + 0.4);
-
-    // Inject energy into center nebula — each arm gets the OTHER node's color
-    if (this._nebula) {
-      this._nebula.injectCollision(velocity, i, j, a.colorHex, b.colorHex);
-      this._centerPulse = Math.max(this._centerPulse, velocity);
-    }
-
-    // Route to outputs
     this.outputRouter.route(event);
   }
 

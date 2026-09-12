@@ -22,6 +22,12 @@ export class NoteMapping {
     return trig.rawValue;
   }
 
+  /**
+   * Called once per frame after nodes move, before triggers are detected.
+   * Mappings that depend on motion between triggers override this.
+   */
+  update(deltaTime, nodes, generatorParams) {}
+
   getParams() { return []; }
 
   setParam(key, value) {
