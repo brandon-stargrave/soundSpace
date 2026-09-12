@@ -49,6 +49,7 @@ export class Engine {
     this.muteOnDefocus = true;
     this._defocusMuted = false;
     this.spatialEnabled = false; // Global 3D spatial audio toggle
+    this.spatialAxis = 'horizontal'; // 'horizontal' | 'vertical' — vertical is for portrait phones
     this._lastTime = 0;
     this._rafId = null;
     this._audioInitialized = false;
@@ -70,6 +71,23 @@ export class Engine {
     // Also apply to the legacy shared toneOutput
     if (this.toneOutput?.setSpatialEnabled) {
       this.toneOutput.setSpatialEnabled(this.spatialEnabled);
+    }
+  }
+
+  /**
+   * Set spatial-axis mode globally. 'horizontal' (default) maps visual X to
+   * L/R; 'vertical' maps visual Y to L/R for portrait-phone playback. No-op
+   * when spatialEnabled is false.
+   */
+  setSpatialAxis(axis) {
+    this.spatialAxis = axis === 'vertical' ? 'vertical' : 'horizontal';
+    for (const gen of this.generators) {
+      if (gen._toneOutput?.setSpatialAxis) {
+        gen._toneOutput.setSpatialAxis(this.spatialAxis);
+      }
+    }
+    if (this.toneOutput?.setSpatialAxis) {
+      this.toneOutput.setSpatialAxis(this.spatialAxis);
     }
   }
 
@@ -174,6 +192,9 @@ export class Engine {
     // Inherit current global spatial-audio state
     if (audio.synth?.setSpatialEnabled) {
       audio.synth.setSpatialEnabled(this.spatialEnabled);
+    }
+    if (audio.synth?.setSpatialAxis) {
+      audio.synth.setSpatialAxis(this.spatialAxis);
     }
 
     // Create shared nebula on first orbit, share with all
@@ -389,6 +410,7 @@ export class Engine {
       },
       spatial: {
         enabled: this.spatialEnabled,
+        axis: this.spatialAxis,
       },
       harmonic: this.harmonicOrbit ? this.harmonicOrbit.serialize() : undefined,
     };
@@ -408,6 +430,9 @@ export class Engine {
     // Spatial audio (set before orbits so new orbits inherit on recreate)
     if (data.spatial) {
       this.setSpatialEnabled(!!data.spatial.enabled);
+      if (data.spatial.axis) {
+        this.setSpatialAxis(data.spatial.axis);
+      }
     }
 
     // Need GeneratorClass to recreate orbits

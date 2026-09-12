@@ -945,7 +945,7 @@ export class CenterNebula {
     this._nanoAlphaAttr.needsUpdate = true;
 
     // ── Turbulence + shimmer (only when running standalone, not via wrapper) ──
-    this._injectTurbulenceAndShimmer(velocity);
+    this._injectTurbulenceAndShimmer(velocity, colorHexA, colorHexB);
   }
 
   /** Inject only particles — no turbulence/shimmer management.
@@ -959,7 +959,7 @@ export class CenterNebula {
     this._injectTurbulenceAndShimmer = origMethod;
   }
 
-  _injectTurbulenceAndShimmer(velocity) {
+  _injectTurbulenceAndShimmer(velocity, colorHexA, colorHexB) {
     const now2 = performance.now() / 1000;
     const sinceLastTrigger = now2 - this._lastTriggerTime;
     this._lastTriggerTime = now2;
@@ -969,6 +969,19 @@ export class CenterNebula {
     const headroom = Math.max(0, 0.7 - this._turbulenceTarget);
     this._turbulenceTarget = Math.min(0.7, this._turbulenceTarget + velocity * adaptiveGain * (0.4 + headroom));
 
+    // Tint = average of the two colliding nodes' normalized colors. Same
+    // _normColor luminance target as the spawned particles so the wave
+    // tints sit in the same brightness register as what they're tinting.
+    // Falls back to neutral (no tint shift) if a color hex is missing.
+    let tintR = 1, tintG = 1, tintB = 1;
+    if (colorHexA != null && colorHexB != null) {
+      const cA = this._normColor(colorHexA);
+      const cB = this._normColor(colorHexB);
+      tintR = (cA.r + cB.r) * 0.5;
+      tintG = (cA.g + cB.g) * 0.5;
+      tintB = (cA.b + cB.b) * 0.5;
+    }
+
     this._shimmerWaves.push({
       birth: now2,
       speed: 1.0 + Math.random() * 1.2,
@@ -976,6 +989,7 @@ export class CenterNebula {
       width: 0.3 + Math.random() * 0.6,
       noiseFreq: 6 + Math.random() * 14,
       noiseAmp: 0.2 + Math.random() * 0.4,
+      tintR, tintG, tintB,
     });
   }
 
@@ -1119,8 +1133,13 @@ export class CenterNebula {
       positions[i3 + 2] = p.z;
 
       // ── Shimmer waves — per-particle sparkle (some immune for negative space) ──
+      // Each wave carries a tint color (avg of its colliding nodes). We
+      // accumulate an intensity-weighted blend across overlapping waves so
+      // multiple in-flight rings yield a multicolor mix in their overlap.
       let pShimmer = 0;
       let particleFlickerPeak = 0;
+      let tintAccumP = 0;
+      let tintRP = 0, tintGP = 0, tintBP = 0;
       if (!p.shimmerImmune) for (const w of this._shimmerWaves) {
         const wAge = now - w.birth;
         const wFront = wAge * w.speed;
@@ -1139,8 +1158,23 @@ export class CenterNebula {
           const s2 = Math.sin(p.theta * w.noiseFreq * 2.7 + p.r * 13 + wAge * 2);
           const spatialNoise = 0.3 + 0.7 * ((s1 * 0.6 + s2 * 0.4 + 1) * 0.5);
           const combined = wPeak * particleFlicker * spatialNoise;
-          pShimmer = Math.max(pShimmer, combined * w.intensity * Math.max(0, wFade));
+          const contribution = combined * w.intensity * Math.max(0, wFade);
+          if (contribution > 0) {
+            pShimmer = Math.max(pShimmer, contribution);
+            tintAccumP += contribution;
+            tintRP += contribution * w.tintR;
+            tintGP += contribution * w.tintG;
+            tintBP += contribution * w.tintB;
+          }
         }
+      }
+      let twRP = 0, twGP = 0, twBP = 0, hasTintP = false;
+      if (tintAccumP > 1e-4) {
+        const inv = 1 / tintAccumP;
+        twRP = tintRP * inv;
+        twGP = tintGP * inv;
+        twBP = tintBP * inv;
+        hasTintP = true;
       }
       // ── Write color, size, alpha ──
       const shimmerSizeBoost = 1 + pShimmer * 0.5;
@@ -1189,6 +1223,17 @@ export class CenterNebula {
       }
 
       if (pShimmer > 0.01) {
+        // Pull base color toward the wave tint (or weighted blend of tints
+        // when multiple waves overlap). Pull strength rides the same
+        // pShimmer envelope, so the radial wavefront drives both tint and
+        // brightness — and overlapping rings paint a multicolor blend.
+        if (hasTintP) {
+          const pull = Math.min(1, pShimmer * 0.9);
+          sr = sr + (twRP - sr) * pull;
+          sg = sg + (twGP - sg) * pull;
+          sb = sb + (twBP - sb) * pull;
+        }
+
         // Sparkles emerge from the accretion ring outward, not from center
         // Probability ramps from 0 at r<0.5 to full at r>1.5
         const sparkleChance = Math.max(0, Math.min(1, (p.r - 0.5) / 1.0));
@@ -1272,8 +1317,11 @@ export class CenterNebula {
       fade = Math.max(0, Math.min(1, fade));
 
       // ── Shimmer waves — per-particle sparkle (some immune) ──
+      // Same intensity-weighted tint accumulation as the main spiral loop.
       let shimmer = 0;
       let dustFlickerPeak = 0;
+      let tintAccumD = 0;
+      let tintRD = 0, tintGD = 0, tintBD = 0;
       if (!d.shimmerImmune) for (const w of this._shimmerWaves) {
         const waveAge = now - w.birth;
         const waveFront = waveAge * w.speed;
@@ -1290,8 +1338,23 @@ export class CenterNebula {
           const ds2 = Math.sin(d.theta * w.noiseFreq * 2.7 + d.r * 13 + waveAge * 2);
           const spatialNoise = 0.3 + 0.7 * ((ds1 * 0.6 + ds2 * 0.4 + 1) * 0.5);
           const combined = peak * particleFlicker * spatialNoise;
-          shimmer = Math.max(shimmer, combined * w.intensity * Math.max(0, waveFade));
+          const contribution = combined * w.intensity * Math.max(0, waveFade);
+          if (contribution > 0) {
+            shimmer = Math.max(shimmer, contribution);
+            tintAccumD += contribution;
+            tintRD += contribution * w.tintR;
+            tintGD += contribution * w.tintG;
+            tintBD += contribution * w.tintB;
+          }
         }
+      }
+      let twRD = 0, twGD = 0, twBD = 0, hasTintD = false;
+      if (tintAccumD > 1e-4) {
+        const inv = 1 / tintAccumD;
+        twRD = tintRD * inv;
+        twGD = tintGD * inv;
+        twBD = tintBD * inv;
+        hasTintD = true;
       }
 
       const i3 = i * 3;
@@ -1381,6 +1444,14 @@ export class CenterNebula {
       }
 
       if (shimmer > 0.01) {
+        // Pull dust toward wave tint(s) — see main loop for rationale.
+        if (hasTintD) {
+          const pull = Math.min(1, shimmer * 0.9);
+          sr = sr + (twRD - sr) * pull;
+          sg = sg + (twGD - sg) * pull;
+          sb = sb + (twBD - sb) * pull;
+        }
+
         const dSparkleChance = Math.max(0, Math.min(1, (d.r - 0.5) / 1.0));
         const isSparkle = dustFlickerPeak > 0.88 && Math.random() < dSparkleChance;
 

@@ -18,6 +18,12 @@ export class SceneManager {
     // Soft particle material registry (updated on resize)
     this._softParticleMaterials = [];
 
+    // When non-null, the renderer's backbuffer is locked to a user-specified
+    // resolution (set via setViewportResolution). Window resizes are ignored
+    // while this is active, and the canvas's CSS dimensions stay independent
+    // of its pixel-buffer size — used by the Record panel for capture.
+    this._manualResolution = null;
+
     // Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -62,6 +68,7 @@ export class SceneManager {
     // Camera animation state
     this._cameraAnim = null;
     this._orbitMode = false;
+    this._orbitSpeed = 0.12; // rad/s; user-adjustable via the orbit button hover slider
 
     // Post-processing
     this._setupPostProcessing();
@@ -530,8 +537,11 @@ export class SceneManager {
   }
 
   /** Toggle cinematic orbit mode.
-   *  Orbits around the Z axis (disc normal) at a fixed elevation,
-   *  keeping the ring flat from the user's perspective.
+   *  Orbits around the camera's CURRENT look-at point (controls.target),
+   *  not a fixed world origin — neither the camera position nor its aim
+   *  change when orbit engages, so the user's composition is preserved
+   *  exactly. The camera just starts spinning in place around its existing
+   *  pivot. Speed is taken from the persistent _orbitSpeed (slider).
    */
   toggleOrbitMode() {
     if (this._orbitMode) {
@@ -540,38 +550,37 @@ export class SceneManager {
       return false;
     }
 
-    // Disc is in XY plane at z=0. Camera orbits around Z axis.
     this._orbitMode = true;
-    this._orbitElevation = 0.58;    // ~33 degrees above disc plane
-    this._orbitSpeed = 0.12;
+    // Pivot = the camera's current look-at point. This is the OrbitControls
+    // pan target, which is what the user has dialed in by panning/zooming.
+    // Cloning it locks the orbit center to that exact spot.
+    this._orbitTarget = this.controls.target.clone();
 
-    // Check if sidebar is open — zoom out more and offset target left
-    const sidebarOpen = !document.getElementById('config-panel')?.classList.contains('collapsed');
-    this._orbitDistance = sidebarOpen ? 6.5 : 5.5;
-    // Offset target to the left (negative X in screen space) when sidebar is open
-    this._orbitTarget = sidebarOpen
-      ? new THREE.Vector3(-2.0, 0, 0.3)
-      : new THREE.Vector3(0, 0, 0.3);
+    // Derive radius, angle around Z, and elevation from the camera's
+    // current placement relative to that pivot. Orbit spins around the
+    // world Z axis through the pivot, matching the disc-plane convention.
+    const dx = this.camera.position.x - this._orbitTarget.x;
+    const dy = this.camera.position.y - this._orbitTarget.y;
+    const dz = this.camera.position.z - this._orbitTarget.z;
+    const rXY = Math.hypot(dx, dy);
+    this._orbitAngle = Math.atan2(dy, dx);
+    this._orbitDistance = Math.hypot(rXY, dz);
+    // atan2 handles rXY === 0 (camera directly above/below pivot): elevation
+    // becomes ±π/2 and the orbit collapses to a point — harmless.
+    this._orbitElevation = Math.atan2(dz, rXY);
 
-    const rXY = this._orbitDistance * Math.cos(this._orbitElevation);
-    const zHeight = this._orbitDistance * Math.sin(this._orbitElevation);
-
-    this._orbitAngle = Math.atan2(this.camera.position.y, this.camera.position.x);
-
-    this._cameraAnim = {
-      startPos: this.camera.position.clone(),
-      startTarget: this.controls.target.clone(),
-      endPos: new THREE.Vector3(
-        this._orbitTarget.x + Math.cos(this._orbitAngle) * rXY,
-        this._orbitTarget.y + Math.sin(this._orbitAngle) * rXY,
-        this._orbitTarget.z + zHeight
-      ),
-      endTarget: this._orbitTarget.clone(),
-      progress: 0,
-      duration: 2.0,
-    };
+    // No transition — pivot, camera position, and aim are already where we
+    // want them. The first orbit-loop tick recomputes the camera at the
+    // exact same place (angle = current angle), so engaging is invisible
+    // beyond the rotation kicking in.
+    this._cameraAnim = null;
 
     return true;
+  }
+
+  /** Set the cinematic-orbit angular speed (rad/s). Persists across toggles. */
+  setOrbitSpeed(v) {
+    if (Number.isFinite(v)) this._orbitSpeed = v;
   }
 
   /** Stop orbit mode on user interaction (rotate/pan, not zoom) */
@@ -638,11 +647,49 @@ export class SceneManager {
   }
 
   _handleResize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    // Window resized.
+    //   - In auto-mode: track the window for both pixel buffer and CSS.
+    //   - In manual mode: pixel buffer stays locked, but the canvas's CSS
+    //     letterbox needs to be recomputed so the framing preview keeps
+    //     fitting the (now-resized) viewport.
+    if (this._manualResolution) {
+      this._applyCanvasDisplaySize();
+      return;
+    }
+    this._applyResolution(window.innerWidth, window.innerHeight, true);
+  }
+
+  /**
+   * Set the renderer's pixel buffer size to a manually-specified resolution,
+   * decoupled from window/CSS size. The on-screen canvas is letterboxed to
+   * the chosen aspect ratio so users can frame their composition for export.
+   * Pass null to clear and revert to window-tracking. Used by the Record
+   * panel for capture-resolution control.
+   */
+  setViewportResolution(w, h) {
+    if (w == null || h == null) {
+      this._manualResolution = null;
+      this._applyResolution(window.innerWidth, window.innerHeight, true);
+      this._clearCanvasDisplaySize();
+      return;
+    }
+    this._manualResolution = { w, h };
+    this._applyResolution(w, h, false);
+    this._applyCanvasDisplaySize();
+  }
+
+  /**
+   * Core resize implementation — updates camera, renderer, composer, nebula
+   * RT, and soft-particle scale uniforms. `updateCanvasStyle` controls
+   * whether the renderer also resizes the canvas's CSS dimensions:
+   *   true  = canvas display resizes to match (window-resize path)
+   *   false = canvas CSS stays the same; only the pixel buffer changes
+   *           (manual-resolution / capture path)
+   */
+  _applyResolution(w, h, updateCanvasStyle) {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
+    this.renderer.setSize(w, h, updateCanvasStyle);
     this.composer.setSize(w, h);
     if (this._nebulaRT) this._nebulaRT.setSize(w, h);
 
@@ -654,6 +701,71 @@ export class SceneManager {
         mat.uniforms.uScale.value = scale;
       }
     }
+  }
+
+  /**
+   * In manual-resolution mode, fit the canvas's CSS dimensions to the chosen
+   * aspect ratio inside the available window space (letterboxed/pillarboxed
+   * with black bars). This lets users visually frame their composition at
+   * the export aspect ratio without changing the pixel buffer.
+   */
+  _applyCanvasDisplaySize() {
+    if (!this._manualResolution) return;
+    const { w, h } = this._manualResolution;
+    const targetAspect = w / h;
+
+    // The config panel is fixed on the right and overlays the canvas opaquely
+    // (with backdrop blur), so the truly *visible* canvas area is the window
+    // minus the panel's footprint. Reading the panel's bounding rect handles
+    // both states automatically: when open its left edge is at innerWidth-300,
+    // when collapsed it's translated offscreen so its left edge is at
+    // innerWidth (no occlusion).
+    const panel = document.getElementById('config-panel');
+    let visibleW = window.innerWidth;
+    if (panel) {
+      const r = panel.getBoundingClientRect();
+      visibleW = Math.max(0, Math.min(window.innerWidth, r.left));
+    }
+    const visibleH = window.innerHeight;
+    const visibleAspect = visibleW / visibleH;
+
+    let cssW, cssH;
+    if (visibleAspect > targetAspect) {
+      // Visible area is wider than target — fit by height (pillarbox)
+      cssH = visibleH;
+      cssW = cssH * targetAspect;
+    } else {
+      // Visible area is taller (or equal) — fit by width (letterbox)
+      cssW = visibleW;
+      cssH = cssW / targetAspect;
+    }
+
+    const canvas = this.renderer.domElement;
+    canvas.style.position = 'absolute';
+    canvas.style.width = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
+    // Center inside the visible (non-panel) region so the framing preview
+    // sits where the user actually sees it, not under the panel.
+    canvas.style.left = `${(visibleW - cssW) / 2}px`;
+    canvas.style.top = `${(visibleH - cssH) / 2}px`;
+    // Faint hairline so the viewport edges are visible against the
+    // black letterbox bars + whatever black is at the edge of the scene.
+    // outline (vs border) doesn't affect layout/box size.
+    canvas.style.outline = '1px solid rgba(255, 255, 255, 0.18)';
+    canvas.style.outlineOffset = '0px';
+  }
+
+  /** Clear any inline letterbox styling, returning the canvas to the
+   *  default 100%×100% fill defined in styles.css. */
+  _clearCanvasDisplaySize() {
+    const canvas = this.renderer.domElement;
+    canvas.style.position = '';
+    canvas.style.width = '';
+    canvas.style.height = '';
+    canvas.style.left = '';
+    canvas.style.top = '';
+    canvas.style.outline = '';
+    canvas.style.outlineOffset = '';
   }
 
   render() {

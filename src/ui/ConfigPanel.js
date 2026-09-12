@@ -4,6 +4,7 @@ import { OutputPanel } from './OutputPanel.js';
 import { PostFXPanel } from './PostFXPanel.js';
 import { MidiOscPanel } from './MidiOscPanel.js';
 import { HarmonicOrbitPanel } from './HarmonicOrbitPanel.js';
+import { RecordPanel } from './RecordPanel.js';
 import { Presets } from './Presets.js';
 
 const MAX_ORBITS = 5;
@@ -64,6 +65,10 @@ export class ConfigPanel {
     const midiOsc = new MidiOscPanel(this.engine);
     this.container.appendChild(midiOsc.render());
 
+    // Record / Export (global — viewport resolution + video/audio capture)
+    const record = new RecordPanel(this.engine.sceneManager, this.engine);
+    this.container.appendChild(record.render());
+
     // Presets (global, not per-orbit)
     this.presets = new Presets(this.engine);
     this.presets._onLoad = () => {
@@ -78,6 +83,14 @@ export class ConfigPanel {
     toggle.addEventListener('click', () => {
       this._collapsed = !this._collapsed;
       this.panel.classList.toggle('collapsed', this._collapsed);
+      // The letterboxed viewport (Record panel) centers within the visible
+      // (non-panel) region — re-fit when the panel slides in/out so the
+      // framing preview tracks the change. Wait for the slide transition
+      // (300ms) so getBoundingClientRect reads the panel's settled position.
+      const sm = this.engine && this.engine.sceneManager;
+      if (sm && sm._manualResolution) {
+        setTimeout(() => sm._applyCanvasDisplaySize(), 320);
+      }
     });
   }
 

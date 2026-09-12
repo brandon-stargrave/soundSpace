@@ -116,6 +116,25 @@ async function startApp() {
     orbitBtn.classList.toggle('active', active);
   });
 
+  // Hover-popover speed slider on the orbit button. Lives inside the button
+  // so :hover stays active when moving the cursor up onto the slider, and
+  // pointer events on the slider are stopped from re-toggling orbit mode.
+  const orbitSpeedPopover = document.createElement('div');
+  orbitSpeedPopover.className = 'orbit-speed-popover';
+  orbitSpeedPopover.innerHTML =
+    '<span class="orbit-speed-label">Speed</span>' +
+    '<input type="range" min="0.02" max="0.6" step="0.01" />';
+  const orbitSpeedSlider = orbitSpeedPopover.querySelector('input');
+  orbitSpeedSlider.value = String(engine.sceneManager._orbitSpeed ?? 0.12);
+  orbitSpeedSlider.addEventListener('input', () => {
+    engine.sceneManager.setOrbitSpeed(parseFloat(orbitSpeedSlider.value));
+  });
+  // Don't let slider interactions bubble up and toggle the orbit button
+  ['click', 'pointerdown', 'mousedown'].forEach(ev => {
+    orbitSpeedPopover.addEventListener(ev, e => e.stopPropagation());
+  });
+  orbitBtn.appendChild(orbitSpeedPopover);
+
   // Deactivate orbit button style when orbit mode is interrupted
   const checkOrbitState = () => {
     if (!engine.sceneManager._orbitMode) {

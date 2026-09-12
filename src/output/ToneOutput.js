@@ -19,6 +19,7 @@ export class ToneOutput {
     this._voiceCursor = 0;
     this._voicePoolSize = 12;
     this._spatialEnabled = false;
+    this._spatialAxis = 'horizontal'; // 'horizontal' | 'vertical' — see setSpatialAxis
     this._initialized = false;
   }
 
@@ -36,11 +37,18 @@ export class ToneOutput {
     const velocity = clamp(triggerEvent.velocity * this.config.velocityScale, 0.01, 1);
     const voice = this._acquireVoice();
 
-    // Pin the panner at the collision point (stays there for note's lifetime)
+    // Pin the panner at the collision point (stays there for note's lifetime).
+    // In 'vertical' axis mode, swap world X↔Y so visual top/bottom drives audio
+    // L/R — appropriate for portrait phones with top/bottom speakers.
     if (this._spatialEnabled && triggerEvent.position) {
       const p = triggerEvent.position;
-      voice.panner.positionX.value = p.x;
-      voice.panner.positionY.value = p.y;
+      if (this._spatialAxis === 'vertical') {
+        voice.panner.positionX.value = p.y;
+        voice.panner.positionY.value = p.x;
+      } else {
+        voice.panner.positionX.value = p.x;
+        voice.panner.positionY.value = p.y;
+      }
       voice.panner.positionZ.value = p.z ?? 0;
     } else {
       voice.panner.positionX.value = 0;
@@ -98,6 +106,15 @@ export class ToneOutput {
   /** Enable/disable spatial panning — affects future triggers only */
   setSpatialEnabled(v) {
     this._spatialEnabled = !!v;
+  }
+
+  /**
+   * Set spatial-axis mapping. 'horizontal' (default) panel maps world X to L/R
+   * (normal headphone/landscape behavior). 'vertical' swaps so world Y drives
+   * L/R — for portrait-phone playback where speakers are top/bottom.
+   */
+  setSpatialAxis(axis) {
+    this._spatialAxis = axis === 'vertical' ? 'vertical' : 'horizontal';
   }
 
   /** Rebuild the full audio graph: voice pool + shared FX chain + destination */

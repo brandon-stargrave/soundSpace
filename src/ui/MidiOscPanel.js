@@ -25,9 +25,18 @@ export class MidiOscPanel {
     body.appendChild(this._createToggleRow('Enable Spatial Panning', this.engine.spatialEnabled, (val) => {
       this.engine.setSpatialEnabled(val);
     }));
+    body.appendChild(this._createToggleRow(
+      'Vertical (phone speakers top/bottom)',
+      this.engine.spatialAxis === 'vertical',
+      (val) => {
+        this.engine.setSpatialAxis(val ? 'vertical' : 'horizontal');
+      }
+    ));
     const spatialInfo = document.createElement('div');
-    spatialInfo.style.cssText = 'font-size: 9px; color: #556; margin-top: 6px;';
-    spatialInfo.textContent = 'Each note panned at its collision point. Best on headphones.';
+    spatialInfo.style.cssText = 'font-size: 9px; color: #556; margin-top: 6px; line-height: 1.4;';
+    spatialInfo.innerHTML =
+      'Each note panned at its collision point. Best on headphones.<br>' +
+      'Use vertical for portrait phones — visual top/bottom drives audio L/R.';
     body.appendChild(spatialInfo);
 
     // ── MIDI ──
