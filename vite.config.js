@@ -1,9 +1,10 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig(({ command }) => ({
+// Serves from the site root. The GitHub Pages workflow builds with
+// --base=/soundSpace/ so local builds, `vite preview`, and server.js all work.
+export default defineConfig({
   root: '.',
   publicDir: 'public',
-  base: command === 'build' ? '/soundSpace/' : '/',
   build: {
     outDir: 'dist',
     sourcemap: true,
@@ -12,4 +13,4 @@ export default defineConfig(({ command }) => ({
     port: 5173,
     open: true,
   },
-}));
+});
