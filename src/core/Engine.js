@@ -205,7 +205,9 @@ export class Engine {
     // still overshoots it. A soft clipper is the hard ceiling behind it.
     this._masterClipDrive = new Tone.Gain(1 / CLIP_INPUT_RANGE);
     this._masterClip = new Tone.WaveShaper(x => softClip(x * CLIP_INPUT_RANGE), 4096);
-    this._masterClip.oversample = '2x';
+    // No oversampling: its resampling filter rings past the curve, and drum
+    // hits measured +0.8 dBFS with 2x. Without it the ceiling is exact.
+    this._masterClip.oversample = 'none';
     this._masterGate = new Tone.Gain(this._outputSilenced() ? 0 : 1);
     Tone.getDestination().chain(
       this._masterComp, this._masterMakeup, this._masterLimiter,
@@ -618,8 +620,6 @@ export class Engine {
    * @param {{ includeIO?: boolean }} [opts] - share links leave out MIDI/OSC settings
    */
   serialize({ includeIO = true } = {}) {
-    const cam = this.sceneManager.camera;
-    const tgt = this.sceneManager.controls.target;
     const data = {
       app: PRESET_APP,
       version: PRESET_VERSION,
@@ -631,10 +631,7 @@ export class Engine {
         muted: !!g.outputMuted,
         solo: !!g.outputSolo,
       })),
-      camera: {
-        position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
-        target: { x: tgt.x, y: tgt.y, z: tgt.z },
-      },
+      camera: this.sceneManager.getView(),
       spatial: {
         enabled: this.spatialEnabled,
         axis: this.spatialAxis,
@@ -688,13 +685,8 @@ export class Engine {
   async _applyPreset(p) {
     const sm = this.sceneManager;
 
-    if (p.camera) {
-      // A preset's camera wins over a running orbit or Home animation
-      sm.stopCameraMotion();
-      sm.camera.position.set(p.camera.position.x, p.camera.position.y, p.camera.position.z);
-      sm.controls.target.set(p.camera.target.x, p.camera.target.y, p.camera.target.z);
-      sm.controls.update();
-    }
+    // A preset's camera wins over a running orbit or Home animation
+    if (p.camera) sm.setView(p.camera.position, p.camera.target);
 
     // Sections a preset leaves out go back to their defaults, so nothing
     // lingers from the previous setup. MIDI/OSC settings belong to the

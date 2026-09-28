@@ -31,6 +31,11 @@ const HOME_TARGET = new THREE.Vector3(0.8839200727001142, -0.42716111489327124, 
 const HOME_MIN_ASPECT = 1.15;
 const HOME_MAX_PULLBACK = 2.8;
 
+/** How far a narrow screen backs the camera away from a view composed for landscape. */
+function narrowPullback(aspect) {
+  return aspect < HOME_MIN_ASPECT ? Math.min(HOME_MAX_PULLBACK, HOME_MIN_ASPECT / aspect) : 1;
+}
+
 /**
  * Camera position and target for the home view. A panel that covers the
  * right of the scene shifts it left; a portrait screen centers the nebula
@@ -43,8 +48,7 @@ function homeView(aspect, sidebarOpen) {
     const shift = -target.x;
     pos.x += shift;
     target.x += shift;
-    const pullback = Math.min(HOME_MAX_PULLBACK, HOME_MIN_ASPECT / aspect);
-    pos.sub(target).multiplyScalar(pullback).add(target);
+    pos.sub(target).multiplyScalar(narrowPullback(aspect)).add(target);
   } else if (sidebarOpen) {
     pos.x -= 2.0;
     target.x -= 2.0;
@@ -628,6 +632,31 @@ export class SceneManager {
   stopCameraMotion() {
     this._orbitMode = false;
     this._cameraAnim = null;
+  }
+
+  /**
+   * Place the camera for a saved view (a preset's). Views are composed on a
+   * landscape screen, so a narrow one backs away until the orbits fit, the
+   * same way the home view does.
+   */
+  setView(position, target) {
+    this.stopCameraMotion();
+    const pull = narrowPullback(this.camera.aspect);
+    this.controls.target.set(target.x, target.y, target.z);
+    this.camera.position.set(position.x, position.y, position.z)
+      .sub(this.controls.target).multiplyScalar(pull).add(this.controls.target);
+    this.controls.update();
+  }
+
+  /** The current view as it would be composed on a landscape screen (undoes setView's pullback). */
+  getView() {
+    const target = this.controls.target.clone();
+    const position = this.camera.position.clone()
+      .sub(target).divideScalar(narrowPullback(this.camera.aspect)).add(target);
+    return {
+      position: { x: position.x, y: position.y, z: position.z },
+      target: { x: target.x, y: target.y, z: target.z },
+    };
   }
 
   /** Smoothly animate camera back to default view */
