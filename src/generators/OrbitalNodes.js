@@ -66,8 +66,9 @@ export class OrbitalNodes extends Generator {
 
   init() {
     this.sceneManager.scene.add(this._group);
-    this.sparklePool = new SparkleBurstPool(this._group);
+    this.sparklePool = new SparkleBurstPool(this._group, this.sceneManager);
     this._crossingFlashes = []; // active color-mix flash sprites
+    this._scenePulse = 0;       // loudest note this frame, for the scene-wide pulses
     this._crossingFlashEnabled = false; // disabled — sparkle bursts provide crossing feedback
     this._nebula = null;
     this._triggerMethod = createTrigger(this.params.triggerMethod);
@@ -84,17 +85,28 @@ export class OrbitalNodes extends Generator {
     const steps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil(deltaTime / MAX_STEP_SECONDS)));
     const h = deltaTime / steps;
     const now = performance.now();
+    this._scenePulse = 0;
     for (let s = 0; s < steps; s++) this._simulate(h, now);
+    if (this._scenePulse > 0) {
+      this.sceneManager.triggerStarTwinkle(this._scenePulse * 0.6);
+      this.sceneManager.triggerChromaticAberration(this._scenePulse * 0.4);
+      this.sceneManager.triggerLightRayPulse(this._scenePulse * 0.3);
+    }
 
     // 2. Update mesh positions & trails
     // Store trail points in local (non-rotated) space using raw angles.
     // The trail lines + meshes rotate together via globalAngle.
     const ringOffset = this._nebula ? this._nebula.globalAngle : 0;
+    // Trails take a point every 1/60 s whatever the refresh rate, so Trail
+    // Length means the same duration on a 60 Hz and a 120 Hz display
+    this._trailClock = (this._trailClock || 0) + deltaTime;
+    const trailPoints = Math.min(4, Math.floor(this._trailClock * 60));
+    this._trailClock = Math.min(this._trailClock - trailPoints / 60, 1 / 60);
     for (const node of this.nodes) {
       // Local position (raw angle, no rotation offset) for trail storage
       const localPos = polarToCartesian(node.angle, this.params.radius);
       if (node.trail) {
-        node.trail.push(localPos.x, localPos.y, 0);
+        for (let k = 0; k < trailPoints; k++) node.trail.push(localPos.x, localPos.y, 0);
         node.trail.line.rotation.z = ringOffset;
         // Trail opacity: 15% base, spikes to ~80% on trigger via bloomPulse
         node.trail.line.material.opacity = 0.15 + node.bloomPulse * 0.65;
@@ -459,7 +471,7 @@ export class OrbitalNodes extends Generator {
     this.nodes = [];
     this._centerPulse = 0;
 
-    this.sparklePool = new SparkleBurstPool(this._group);
+    this.sparklePool = new SparkleBurstPool(this._group, this.sceneManager);
     if (!this._sharedNebula) this._nebula = null;
     // Existing trigger/mapping instances are kept so their user-set params
     // survive; _buildNodes re-inits them against the new nodes
@@ -605,14 +617,18 @@ export class OrbitalNodes extends Generator {
       this.sceneManager.registerSoftParticleMaterial(this._nebula._dustMaterial);
     }
 
-    // Re-init motion algorithm and trigger method with fresh nodes
-    if (this._motionAlgo) {
+    // The trigger's pins/zones were part of the rebuilt group, so it always
+    // re-inits. The motion algorithm and mapping keep their running state
+    // (time, averages) unless the node count changed, so a visual-only change
+    // like trail length or node size doesn't restart them.
+    const countChanged = prevAngles.length !== this.nodes.length;
+    if (this._motionAlgo && countChanged) {
       this._motionAlgo.init(this.nodes, this.params);
     }
     if (this._triggerMethod) {
       this._triggerMethod.init(this.nodes, this.params, this._group);
     }
-    if (this._noteMapping) {
+    if (this._noteMapping && countChanged) {
       this._noteMapping.init(this.nodes, this.params);
     }
   }
@@ -740,10 +756,9 @@ export class OrbitalNodes extends Generator {
       if (b.crossingHistory.length > 5) b.crossingHistory.pop();
     }
 
-    // Star twinkle + chromatic aberration + light rays
-    this.sceneManager.triggerStarTwinkle(velocity * 0.6);
-    this.sceneManager.triggerChromaticAberration(velocity * 0.4);
-    this.sceneManager.triggerLightRayPulse(velocity * 0.3);
+    // Star twinkle, chromatic aberration and light rays are scene-wide:
+    // applied once per frame with the loudest note (see update)
+    this._scenePulse = Math.max(this._scenePulse, velocity);
 
     // Sparkle bursts
     const meshA = a.mesh.position;

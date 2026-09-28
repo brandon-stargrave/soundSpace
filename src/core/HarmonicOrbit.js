@@ -20,6 +20,10 @@ import { parentScale, hasFlatSeven, isMinorKey, diatonicChord, chordRoot, voiceC
 
 const TWO_PI = Math.PI * 2;
 
+// Scratch objects for the holo trail's per-instance updates
+const _holoMatrix = new THREE.Matrix4();
+const _holoColor = new THREE.Color();
+
 export { CHORD_VOICINGS } from '../util/constants.js';
 
 const DEFAULT_PARAMS = {
@@ -156,7 +160,7 @@ export class HarmonicOrbit {
 
   init() {
     this.sceneManager.scene.add(this._group);
-    this._sparklePool = new SparkleBurstPool(this._group);
+    this._sparklePool = new SparkleBurstPool(this._group, this.sceneManager);
     this._buildVisuals();
     this._group.visible = this.params.enabled;
   }
@@ -506,25 +510,26 @@ export class HarmonicOrbit {
     // perimeter. Each sphere pulses (opacity + scale) as the traveler
     // passes, and the pulse decays over angular distance — creating a
     // bright fading trail behind the traveler.
+    // One instanced mesh draws every sphere in a single call. With additive
+    // blending, a sphere's opacity is the same as scaling its color, so each
+    // instance's brightness rides in its instance color.
     const sides = this.params.sides;
     const totalSamples = sides * HOLO_SAMPLES_PER_EDGE;
     this._holoSphereGeo = new THREE.SphereGeometry(HOLO_SPHERE_RADIUS, 8, 6);
+    this._holoMesh = new THREE.InstancedMesh(
+      this._holoSphereGeo,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+      totalSamples,
+    );
+    this._holoMesh.frustumCulled = false;
     this._holoSpheres = [];
     for (let i = 0; i < totalSamples; i++) {
       const t = i / totalSamples; // 0..1 cycle position
-      const material = new THREE.MeshBasicMaterial({
-        color: HOLO_COLOR,
-        transparent: true,
-        opacity: HOLO_BASE_OPACITY,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
-      const mesh = new THREE.Mesh(this._holoSphereGeo, material);
-      this._perimeterPos(r, sides, t, mesh.position);
-      mesh.scale.setScalar(HOLO_BASE_SCALE);
-      this._group.add(mesh);
-      this._holoSpheres.push({ mesh, cyclePos: t });
+      const sphere = { cyclePos: t, x: 0, y: 0 };
+      this._perimeterPos(r, sides, t, sphere);
+      this._holoSpheres.push(sphere);
     }
+    this._group.add(this._holoMesh);
 
     // ── Traveler: nested wireframed star polyhedra ────────────────
     //   Outer = BASS voice — stella octangula (compound of two tetrahedra)
@@ -581,7 +586,7 @@ export class HarmonicOrbit {
    *      vertex where a transpose fired, emphasizing the harmonic event.
    */
   _updateHoloTrail(deltaTime = 0) {
-    if (!this._holoSpheres || this._holoSpheres.length === 0) return;
+    if (!this._holoMesh || this._holoSpheres.length === 0) return;
 
     // Time-decay the transpose pulse
     if (this._transposePulse > 0) {
@@ -598,7 +603,9 @@ export class HarmonicOrbit {
     const tpSpread = HOLO_TRANSPOSE_SPREAD;
     const tpCenter = this._transposeCyclePos;
 
-    for (const s of this._holoSpheres) {
+    const mesh = this._holoMesh;
+    for (let i = 0; i < this._holoSpheres.length; i++) {
+      const s = this._holoSpheres[i];
       // Trail pulse ───────────────────────────────────────────────
       let behind = cyclePos - s.cyclePos;
       if (behind < 0) behind += 1;
@@ -622,19 +629,23 @@ export class HarmonicOrbit {
 
       // Combine: both contributions add into the pulse, clamped to [0,1]
       const pulse = Math.min(1, trail + transposeLocal);
-      s.mesh.material.opacity =
-        HOLO_BASE_OPACITY + (HOLO_PEAK_OPACITY - HOLO_BASE_OPACITY) * pulse;
-      s.mesh.scale.setScalar(
-        HOLO_BASE_SCALE + (HOLO_PEAK_SCALE - HOLO_BASE_SCALE) * pulse
-      );
+      const opacity = HOLO_BASE_OPACITY + (HOLO_PEAK_OPACITY - HOLO_BASE_OPACITY) * pulse;
+      const scale = HOLO_BASE_SCALE + (HOLO_PEAK_SCALE - HOLO_BASE_SCALE) * pulse;
+      _holoMatrix.makeScale(scale, scale, scale).setPosition(s.x, s.y, 0);
+      mesh.setMatrixAt(i, _holoMatrix);
+      mesh.setColorAt(i, _holoColor.setHex(HOLO_COLOR).multiplyScalar(opacity));
     }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
   /** Dispose the holo-sphere trail — individual materials + shared geometry. */
   _disposeHoloTrail() {
-    for (const s of this._holoSpheres) {
-      this._group.remove(s.mesh);
-      try { s.mesh.material.dispose(); } catch {}
+    if (this._holoMesh) {
+      this._group.remove(this._holoMesh);
+      this._holoMesh.material.dispose();
+      this._holoMesh.dispose();
+      this._holoMesh = null;
     }
     this._holoSpheres = [];
     if (this._holoSphereGeo) {
@@ -674,8 +685,9 @@ export class HarmonicOrbit {
     const r = this._resolveRadius();
     this._appliedRadius = r;
     for (const s of this._holoSpheres) {
-      this._perimeterPos(r, this.params.sides, s.cyclePos, s.mesh.position);
+      this._perimeterPos(r, this.params.sides, s.cyclePos, s);
     }
+    this._updateHoloTrail();
     this._updateTravelerPosition(this._cyclePos);
   }
 

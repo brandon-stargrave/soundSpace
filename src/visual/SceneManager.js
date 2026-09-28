@@ -16,6 +16,14 @@ const _worldOrigin = new THREE.Vector3();
 
 const MAX_SHOOTING_STARS = 4;
 
+// God rays are computed at this fraction of the drawing buffer
+const GOD_RAY_SCALE = 0.5;
+
+/** MSAA samples for the scene target: 4 up to about 1080p worth of pixels, none above (high-DPI screens are already smooth). */
+function msaaSamplesFor(width, height) {
+  return width * height <= 2.3e6 ? 4 : 0;
+}
+
 export class SceneManager {
   constructor(containerEl) {
     this.container = containerEl;
@@ -30,7 +38,9 @@ export class SceneManager {
     this._manualResolution = null;
 
     // Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    // Antialiasing happens on the composer's scene target (see _setupPostProcessing);
+    // canvas-level MSAA would only smooth the final full-screen quad
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -116,7 +126,14 @@ export class SceneManager {
   _setupPostProcessing() {
     const size = new THREE.Vector2(window.innerWidth, window.innerHeight);
 
-    this.composer = new EffectComposer(this.renderer);
+    // A multisampled scene target gives the 1 px lines and particles real
+    // antialiasing (samples are chosen per resolution in _applyResolution)
+    const pr = this.renderer.getPixelRatio();
+    const target = new THREE.WebGLRenderTarget(size.x * pr, size.y * pr, {
+      type: THREE.HalfFloatType,
+      samples: msaaSamplesFor(size.x * pr, size.y * pr),
+    });
+    this.composer = new EffectComposer(this.renderer, target);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
     // Bloom — (resolution, strength, radius, threshold).
@@ -462,19 +479,20 @@ export class SceneManager {
     this._godRayBaseIntensity = 0.4;
     this._godRayCenter = new THREE.Vector2(0.5, 0.5);
 
-    // Separate render target for nebula-only rendering
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this._nebulaRT = new THREE.WebGLRenderTarget(w, h, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-    });
+    // Separate render target for nebula-only rendering, at a fraction of the
+    // drawing buffer (the rays are a blur, so detail there is wasted)
+    const buffer = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    this._nebulaRT = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.round(buffer.x * GOD_RAY_SCALE)),
+      Math.max(1, Math.round(buffer.y * GOD_RAY_SCALE)),
+      { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false },
+    );
 
     // God ray shader samples from the nebula-only texture, composites onto main scene
     const godRayShader = {
       uniforms: {
         tDiffuse: { value: null },              // main scene (auto-set by ShaderPass)
-        tNebula: { value: this._nebulaRT.texture }, // nebula-only render
+        tNebula: { value: null },               // nebula-only render, set below
         uCenter: { value: this._godRayCenter },
         uIntensity: { value: this._godRayBaseIntensity },
       },
@@ -521,6 +539,11 @@ export class SceneManager {
     };
 
     this.godRayPass = new ShaderPass(godRayShader);
+    // ShaderPass copies the uniforms it's given, so point the pass's own
+    // uniforms at the live center and nebula texture (the center used to stay
+    // frozen mid-screen)
+    this.godRayPass.uniforms.uCenter.value = this._godRayCenter;
+    this.godRayPass.uniforms.tNebula.value = this._nebulaRT.texture;
     this._godRayEnabled = true;
 
     // Use Three.js layers: layer 1 = nebula only
@@ -775,8 +798,18 @@ export class SceneManager {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, updateCanvasStyle);
+    // More pixels means fewer samples, keeping the scene target affordable
+    const samples = msaaSamplesFor(w * pr, h * pr);
+    for (const rt of [this.composer.renderTarget1, this.composer.renderTarget2]) {
+      if (rt.samples !== samples) {
+        rt.samples = samples;
+        rt.dispose();
+      }
+    }
     this.composer.setSize(w, h);
-    if (this._nebulaRT) this._nebulaRT.setSize(w, h);
+    if (this._nebulaRT) {
+      this._nebulaRT.setSize(Math.max(1, Math.round(w * pr * GOD_RAY_SCALE)), Math.max(1, Math.round(h * pr * GOD_RAY_SCALE)));
+    }
 
     for (const mat of this._softParticleMaterials) {
       this._applySoftParticleScale(mat);
@@ -851,6 +884,11 @@ export class SceneManager {
   /** @param {number} [dt] - seconds since the previous frame */
   render(dt = 1 / 60) {
     this.controls.update();
+    // Orbit mode places the camera itself below; take any wheel zoom the
+    // controls just applied as the new orbit distance instead of undoing it
+    if (this._orbitMode && !this._cameraAnim && this._orbitTarget) {
+      this._orbitDistance = this.camera.position.distanceTo(this._orbitTarget);
+    }
     // The per-frame decay constants below were tuned at 60 fps; raising them
     // to this power keeps their timing the same at any refresh rate.
     const frames = dt * 60;
@@ -1153,13 +1191,13 @@ export class SceneManager {
       this._nebulaLayerCamera.position.copy(this.camera.position);
       this._nebulaLayerCamera.rotation.copy(this.camera.rotation);
       this._nebulaLayerCamera.projectionMatrix.copy(this.camera.projectionMatrix);
+      // Point sizes are in drawing-buffer pixels; scale them to the smaller target
+      for (const m of this._softParticleMaterials) if (m.uniforms?.uScale) m.uniforms.uScale.value *= GOD_RAY_SCALE;
       this.renderer.setRenderTarget(this._nebulaRT);
       this.renderer.clear();
       this.renderer.render(this.scene, this._nebulaLayerCamera);
       this.renderer.setRenderTarget(null);
-
-      // Update the nebula texture uniform
-      this.godRayPass.uniforms.tNebula.value = this._nebulaRT.texture;
+      for (const m of this._softParticleMaterials) if (m.uniforms?.uScale) m.uniforms.uScale.value /= GOD_RAY_SCALE;
     }
 
     // Chromatic aberration decay
@@ -1177,6 +1215,8 @@ export class SceneManager {
       this._rgbShiftIntensity = 0;
       this.rgbShiftPass.uniforms['amount'].value = 0;
     }
+    // A full-screen pass with nothing to do is skipped
+    this.rgbShiftPass.enabled = this._rgbShiftIntensity > 0;
 
     this.composer.render();
   }

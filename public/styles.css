@@ -1148,3 +1148,10 @@ input[type="range"]:focus-visible {
 [hidden] {
   display: none !important;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  #loader-ring { animation-duration: 4s; }
+  .record-btn.recording { animation: none; }
+  .toast { animation: none; }
+  #config-panel { transition: none; }
+}

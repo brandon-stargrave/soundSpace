@@ -254,109 +254,187 @@ function getStarTexture() {
 
 // ── Sparkle Particle Burst ────────────────────────────────────────
 
+const SPARKLE_CAPACITY = 480;
+
+const SPARKLE_VERT = /* glsl */ `
+attribute float aSize;
+attribute float aAlpha;
+attribute float aRotation;
+attribute vec3 aColor;
+varying vec3 vColor;
+varying float vAlpha;
+varying float vRotation;
+uniform float uScale;
+void main() {
+  vColor = aColor;
+  vAlpha = aAlpha;
+  vRotation = aRotation;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  // World-size sprites: the same on-screen size a THREE.Sprite of scale aSize would have
+  gl_PointSize = aSize * projectionMatrix[1][1] * uScale / -mvPosition.z;
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+const SPARKLE_FRAG = /* glsl */ `
+uniform sampler2D uMap;
+varying vec3 vColor;
+varying float vAlpha;
+varying float vRotation;
+void main() {
+  if (vAlpha <= 0.0) discard;
+  vec2 p = gl_PointCoord - 0.5;
+  float c = cos(vRotation), s = sin(vRotation);
+  vec2 uv = vec2(c * p.x - s * p.y, s * p.x + c * p.y) + 0.5;
+  vec4 tex = texture2D(uMap, uv);
+  gl_FragColor = vec4(vColor * tex.rgb, tex.a * vAlpha);
+}
+`;
+
 /**
- * Simple sparkle burst using individual star sprites (always camera-facing).
- * Each particle fades via scale + opacity. No additive blending.
+ * Sparkle bursts drawn as one batched point cloud: a fixed pool of star
+ * particles in a ring buffer, one draw call however many are alive. (Each
+ * sparkle used to be its own sprite, material and draw call.)
  */
 export class SparkleBurstPool {
-  constructor(scene) {
+  /**
+   * @param {THREE.Object3D} scene - parent to add the point cloud to
+   * @param {object} [sceneManager] - registers the material so sizes follow resolution changes
+   */
+  constructor(scene, sceneManager = null) {
     this.scene = scene;
-    this.particles = [];
+    this._sceneManager = sceneManager;
+    const n = SPARKLE_CAPACITY;
+    this._state = {
+      x: new Float32Array(n), y: new Float32Array(n), vx: new Float32Array(n), vy: new Float32Array(n),
+      life: new Float32Array(n), maxLife: new Float32Array(n), baseScale: new Float32Array(n),
+      phase: new Float32Array(n), freq: new Float32Array(n), alphaVar: new Float32Array(n),
+    };
+    this._cursor = 0;
+    this._alive = 0;
+
+    const geometry = new THREE.BufferGeometry();
+    this._positions = new Float32Array(n * 3);
+    this._colors = new Float32Array(n * 3);
+    this._alphas = new Float32Array(n);
+    this._sizes = new Float32Array(n);
+    this._rotations = new Float32Array(n);
+    geometry.setAttribute('position', new THREE.BufferAttribute(this._positions, 3).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('aColor', new THREE.BufferAttribute(this._colors, 3));
+    geometry.setAttribute('aAlpha', new THREE.BufferAttribute(this._alphas, 1).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(this._sizes, 1).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('aRotation', new THREE.BufferAttribute(this._rotations, 1));
+
+    this._material = new THREE.ShaderMaterial({
+      uniforms: { uMap: { value: getStarTexture() }, uScale: { value: 400 } },
+      vertexShader: SPARKLE_VERT,
+      fragmentShader: SPARKLE_FRAG,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.points = new THREE.Points(geometry, this._material);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 2;
+    scene.add(this.points);
+    sceneManager?.registerSoftParticleMaterial(this._material);
   }
 
   spawn(x, y, z, color, duration = 0.7, speed = 1.2, opts = {}) {
     const count = opts.count ?? 15;
     const scaleMul = opts.scaleMul ?? 1.0;
     const scatterMul = opts.scatterMul ?? 1.0;
-    for (let i = 0; i < count; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: getStarTexture(),
-        color,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        rotation: Math.random() * Math.PI * 2,
-      });
-      const mesh = new THREE.Sprite(mat);
+    const st = this._state;
+    _sparkleColor.set(color);
+    for (let k = 0; k < count; k++) {
+      // Oldest slot first: when the pool is full the oldest sparkle gives way
+      const i = this._cursor;
+      this._cursor = (this._cursor + 1) % SPARKLE_CAPACITY;
+      if (st.life[i] >= st.maxLife[i]) this._alive++;
 
       // Spread out from spawn point immediately
       const angle = Math.random() * Math.PI * 2;
       const scatter = (0.08 + Math.random() * 0.1) * scatterMul;
-      mesh.position.set(
-        x + Math.cos(angle) * scatter,
-        y + Math.sin(angle) * scatter,
-        0.05
-      );
-
-      // Random scale variation, optionally multiplied
-      const baseScale = (0.1 + Math.random() * 0.12) * scaleMul;
-      mesh.scale.setScalar(0);
-
-      this.scene.add(mesh);
-
+      st.x[i] = x + Math.cos(angle) * scatter;
+      st.y[i] = y + Math.sin(angle) * scatter;
       const spd = speed * (0.3 + Math.random() * 0.7);
-      this.particles.push({
-        mesh,
-        vx: Math.cos(angle) * spd,
-        vy: Math.sin(angle) * spd,
-        life: 0,
-        maxLife: duration * (0.7 + Math.random() * 0.5),
-        baseScale,
-        phase: Math.random() * Math.PI * 2,
-        freq: 20 + Math.random() * 40,
-        alphaVar: 0.4 + Math.random() * 0.6,
-      });
+      st.vx[i] = Math.cos(angle) * spd;
+      st.vy[i] = Math.sin(angle) * spd;
+      st.life[i] = 0;
+      st.maxLife[i] = duration * (0.7 + Math.random() * 0.5);
+      st.baseScale[i] = (0.1 + Math.random() * 0.12) * scaleMul;
+      st.phase[i] = Math.random() * Math.PI * 2;
+      st.freq[i] = 20 + Math.random() * 40;
+      st.alphaVar[i] = 0.4 + Math.random() * 0.6;
+      this._positions[i * 3 + 2] = 0.05;
+      this._colors[i * 3] = _sparkleColor.r;
+      this._colors[i * 3 + 1] = _sparkleColor.g;
+      this._colors[i * 3 + 2] = _sparkleColor.b;
+      this._rotations[i] = Math.random() * Math.PI * 2;
     }
+    const geo = this.points.geometry;
+    geo.attributes.aColor.needsUpdate = true;
+    geo.attributes.aRotation.needsUpdate = true;
   }
 
   update(deltaTime) {
-    for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i];
-      p.life += deltaTime;
-      const t = p.life / p.maxLife;
-
-      if (t >= 1) {
-        // Remove particle
-        this.scene.remove(p.mesh);
-        p.mesh.material.dispose();
-        this.particles.splice(i, 1);
+    const st = this._state;
+    const drag = Math.max(0, 1 - deltaTime * 3);
+    let alive = 0;
+    for (let i = 0; i < SPARKLE_CAPACITY; i++) {
+      if (st.life[i] >= st.maxLife[i]) {
+        this._alphas[i] = 0;
+        this._sizes[i] = 0;
         continue;
       }
-
+      alive++;
+      st.life[i] += deltaTime;
+      const t = st.life[i] / st.maxLife[i];
+      if (t >= 1) {
+        this._alphas[i] = 0;
+        this._sizes[i] = 0;
+        continue;
+      }
       // Smooth envelope: fade in 15%, fade out
       const fadeIn = Math.min(1, t / 0.15);
       const fadeOut = 1 - ((Math.max(0, t - 0.1) / 0.9) ** 2);
       const envelope = fadeIn * Math.max(0, fadeOut);
-
       // Sparkle flicker
-      const flicker = 0.3 + 0.7 * ((Math.sin(p.life * p.freq + p.phase) + 1) * 0.5);
-
-      // Scale controls visibility — fades in and out smoothly
-      const scale = p.baseScale * envelope * flicker;
-      p.mesh.scale.setScalar(scale);
-      p.mesh.material.opacity = envelope * p.alphaVar;
-
+      const flicker = 0.3 + 0.7 * ((Math.sin(st.life[i] * st.freq[i] + st.phase[i]) + 1) * 0.5);
+      this._sizes[i] = st.baseScale[i] * envelope * flicker;
+      this._alphas[i] = envelope * st.alphaVar[i];
       // Movement with drag + position noise
-      p.vx *= (1 - deltaTime * 3);
-      p.vy *= (1 - deltaTime * 3);
-      p.mesh.position.x += p.vx * deltaTime + (Math.random() - 0.5) * 0.008;
-      p.mesh.position.y += p.vy * deltaTime + (Math.random() - 0.5) * 0.008;
+      st.vx[i] *= drag;
+      st.vy[i] *= drag;
+      st.x[i] += st.vx[i] * deltaTime + (Math.random() - 0.5) * 0.008;
+      st.y[i] += st.vy[i] * deltaTime + (Math.random() - 0.5) * 0.008;
+      this._positions[i * 3] = st.x[i];
+      this._positions[i * 3 + 1] = st.y[i];
     }
+    if (alive === 0 && this._alive === 0) return;
+    this._alive = alive;
+    const geo = this.points.geometry;
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.aAlpha.needsUpdate = true;
+    geo.attributes.aSize.needsUpdate = true;
   }
 
   dispose() {
-    for (const p of this.particles) {
-      this.scene.remove(p.mesh);
-      p.mesh.material.dispose();
-    }
-    this.particles = [];
+    this.scene.remove(this.points);
+    this._sceneManager?.unregisterSoftParticleMaterial(this._material);
+    this.points.geometry.dispose();
+    this._material.dispose();
   }
 }
+
+const _sparkleColor = new THREE.Color();
 
 // ── Center Nebula / Spiral Galaxy ─────────────────────────────────
 
 import { gaussRand } from '../util/math.js';
 
+const MAX_SHIMMER_WAVES = 12;
+// How far past the cursor a spawn looks for a free particle slot
+const SLOT_SEARCH = 64;
 const MAX_NEBULA_PARTICLES = 2500;
 const MAX_DUST_PARTICLES = 5000;
 const MAX_CLOUD_PARTICLES = 600;
@@ -895,6 +973,17 @@ export class CenterNebula {
       tintB = (cA.b + cB.b) * 0.5;
     }
 
+    // Every particle checks every live wave each frame, so a busy orbit
+    // (dozens of notes a second) would make the update cost explode. Past
+    // the cap, a trigger feeds the youngest wave instead of adding one.
+    if (this._shimmerWaves.length >= MAX_SHIMMER_WAVES) {
+      const w = this._shimmerWaves[this._shimmerWaves.length - 1];
+      w.intensity = Math.min(1.4, w.intensity + velocity * 0.25);
+      w.tintR = (w.tintR + tintR) * 0.5;
+      w.tintG = (w.tintG + tintG) * 0.5;
+      w.tintB = (w.tintB + tintB) * 0.5;
+      return;
+    }
     this._shimmerWaves.push({
       birth: now2,
       speed: 1.0 + Math.random() * 1.2,
@@ -927,6 +1016,13 @@ export class CenterNebula {
   /** Update particles without managing globalAngle/shimmer/turbulence state.
    *  Used by LegacyNebulaBackend which receives these from the wrapper. */
   _updateParticlesOnly(deltaTime) {
+    // Per-wave terms are the same for every particle: work them out once
+    const nowWaves = performance.now() / 1000;
+    for (const w of this._shimmerWaves) {
+      w.age = nowWaves - w.birth;
+      w.front = w.age * w.speed;
+      w.fade = Math.max(0, 1 - w.age / 5.0);
+    }
     const positions = this._posAttr.array;
     const colors = this._colorAttr.array;
     const sizes = this._sizeAttr.array;
@@ -1054,11 +1150,10 @@ export class CenterNebula {
       let tintAccumP = 0;
       let tintRP = 0, tintGP = 0, tintBP = 0;
       if (!p.shimmerImmune) for (const w of this._shimmerWaves) {
-        const wAge = now - w.birth;
-        const wFront = wAge * w.speed;
-        const wDist = Math.abs(p.r - wFront);
-        if (wDist < w.width) {
-          const wFade = 1 - wAge / 5.0;
+        const wDist = Math.abs(p.r - w.front);
+        if (wDist < w.width && w.fade > 0) {
+          const wAge = w.age;
+          const wFade = w.fade;
           const wPeak = Math.cos((wDist / w.width) * Math.PI * 0.5);
           // Layered per-particle flicker — multiple frequencies for depth
           const f1 = Math.sin(p.shimmerPhase + p.age * p.shimmerSpeed + wAge * w.noiseFreq);
@@ -1236,11 +1331,10 @@ export class CenterNebula {
       let tintAccumD = 0;
       let tintRD = 0, tintGD = 0, tintBD = 0;
       if (!d.shimmerImmune) for (const w of this._shimmerWaves) {
-        const waveAge = now - w.birth;
-        const waveFront = waveAge * w.speed;
-        const dist = Math.abs(d.r - waveFront);
-        if (dist < w.width) {
-          const waveFade = 1 - waveAge / 5.0;
+        const dist = Math.abs(d.r - w.front);
+        if (dist < w.width && w.fade > 0) {
+          const waveAge = w.age;
+          const waveFade = w.fade;
           const peak = Math.cos((dist / w.width) * Math.PI * 0.5);
           const df1 = Math.sin(d.shimmerPhase + d.age * d.shimmerSpeed + waveAge * w.noiseFreq);
           const df2 = Math.sin(d.shimmerPhase * 2.3 + d.age * d.shimmerSpeed * 0.7 + waveAge * 3.1);
@@ -1617,39 +1711,33 @@ export class CenterNebula {
   }
 
   _findCloudSlot() {
-    for (let n = 0; n < MAX_CLOUD_PARTICLES; n++) {
-      const idx = (this._cloudCursor + n) % MAX_CLOUD_PARTICLES;
-      if (!this._cloudParticles[idx].alive) {
-        this._cloudCursor = (idx + 1) % MAX_CLOUD_PARTICLES;
-        return idx;
-      }
-    }
-    let oldestIdx = 0;
-    let oldestRatio = 0;
-    for (let i = 0; i < MAX_CLOUD_PARTICLES; i++) {
-      const ratio = this._cloudParticles[i].age / this._cloudParticles[i].maxLife;
-      if (ratio > oldestRatio) { oldestRatio = ratio; oldestIdx = i; }
-    }
-    this._cloudCursor = (oldestIdx + 1) % MAX_CLOUD_PARTICLES;
-    return oldestIdx;
+    return this._nextSlot(this._cloudParticles, '_cloudCursor');
   }
 
+
   _findNanoSlot() {
-    for (let n = 0; n < MAX_NANO_PARTICLES; n++) {
-      const idx = (this._nanoCursor + n) % MAX_NANO_PARTICLES;
-      if (!this._nanoParticles[idx].alive) {
-        this._nanoCursor = (idx + 1) % MAX_NANO_PARTICLES;
-        return idx;
+    return this._nextSlot(this._nanoParticles, '_nanoCursor');
+  }
+
+
+  /**
+   * The next particle slot: the first dead one within SLOT_SEARCH of the
+   * cursor, otherwise the slot at the cursor. Slots are handed out in ring
+   * order, so that one is about the oldest. Bounded work per spawn, even with
+   * the pool full.
+   */
+  _nextSlot(particles, cursorKey) {
+    const n = particles.length;
+    const start = this[cursorKey];
+    for (let k = 0; k < SLOT_SEARCH; k++) {
+      const i = (start + k) % n;
+      if (!particles[i].alive) {
+        this[cursorKey] = (i + 1) % n;
+        return i;
       }
     }
-    let oldestIdx = 0;
-    let oldestRatio = 0;
-    for (let i = 0; i < MAX_NANO_PARTICLES; i++) {
-      const ratio = this._nanoParticles[i].age / this._nanoParticles[i].maxLife;
-      if (ratio > oldestRatio) { oldestRatio = ratio; oldestIdx = i; }
-    }
-    this._nanoCursor = (oldestIdx + 1) % MAX_NANO_PARTICLES;
-    return oldestIdx;
+    this[cursorKey] = (start + 1) % n;
+    return start;
   }
 
   _normColor(colorHex, target = 0.22) {
@@ -1673,43 +1761,14 @@ export class CenterNebula {
   }
 
   _findDustSlot() {
-    for (let n = 0; n < MAX_DUST_PARTICLES; n++) {
-      const idx = (this._dustCursor + n) % MAX_DUST_PARTICLES;
-      if (!this._dustParticles[idx].alive) {
-        this._dustCursor = (idx + 1) % MAX_DUST_PARTICLES;
-        return idx;
-      }
-    }
-    let oldestIdx = 0;
-    let oldestRatio = 0;
-    for (let i = 0; i < MAX_DUST_PARTICLES; i++) {
-      const ratio = this._dustParticles[i].age / this._dustParticles[i].maxLife;
-      if (ratio > oldestRatio) { oldestRatio = ratio; oldestIdx = i; }
-    }
-    this._dustCursor = (oldestIdx + 1) % MAX_DUST_PARTICLES;
-    return oldestIdx;
+    return this._nextSlot(this._dustParticles, '_dustCursor');
   }
 
+
   _findSlot() {
-    for (let n = 0; n < MAX_NEBULA_PARTICLES; n++) {
-      const idx = (this._cursor + n) % MAX_NEBULA_PARTICLES;
-      if (!this._particles[idx].alive) {
-        this._cursor = (idx + 1) % MAX_NEBULA_PARTICLES;
-        return idx;
-      }
-    }
-    let oldestIdx = 0;
-    let oldestRatio = 0;
-    for (let i = 0; i < MAX_NEBULA_PARTICLES; i++) {
-      const ratio = this._particles[i].age / this._particles[i].maxLife;
-      if (ratio > oldestRatio) {
-        oldestRatio = ratio;
-        oldestIdx = i;
-      }
-    }
-    this._cursor = (oldestIdx + 1) % MAX_NEBULA_PARTICLES;
-    return oldestIdx;
+    return this._nextSlot(this._particles, '_cursor');
   }
+
 }
 
 // ── Orbit Ring ────────────────────────────────────────────────────
