@@ -10,12 +10,17 @@ import { CenterNebula } from '../visual/CyberpunkStyle.js';
 import { HarmonicOrbit } from './HarmonicOrbit.js';
 import { OrbitalNodes } from '../generators/OrbitalNodes.js';
 import { DEFAULT_SCALE_CONFIG, DEFAULT_SYNTH_CONFIG } from '../util/constants.js';
+import { sanitizePreset, PresetError, PRESET_APP, PRESET_VERSION, VISUAL_DEFAULTS, MAX_ORBITS } from './presetSchema.js';
+import { getAlgorithmIds, createAlgorithm } from '../generators/motion/MotionRegistry.js';
+import { getTriggerIds, createTrigger } from '../generators/triggers/TriggerRegistry.js';
+import { getMappingIds, createMapping } from '../generators/mapping/MappingRegistry.js';
 
 // Scratch vectors for listener orientation — avoid per-frame allocation
 const _tmpFwd = new THREE.Vector3();
 const _tmpUp = new THREE.Vector3();
 
-const MAX_ORBITS = 5;
+// New orbits take the first radius clear of the existing ones
+const ORBIT_RADIUS_SLOTS = [3, 4.5, 6, 1.75, 5.25, 2.4];
 
 // Notes are triggered from the render loop the moment they happen. Tone's
 // default 100 ms scheduling look-ahead would make every note sound that much
@@ -75,6 +80,15 @@ export class Engine {
     this._toneStarted = false;
     this.masterVolume = 0.8;       // 0..1, listener preference (not saved in presets)
     this._masterGate = null;       // mute gain at the end of the master bus
+    this._opQueue = Promise.resolve();
+    // Scene-wide visual settings shared by every orbit (Post FX lives in SceneManager)
+    this.visual = {
+      crossingFlash: VISUAL_DEFAULTS.crossingFlash,
+      spinSpeed: VISUAL_DEFAULTS.spinSpeed,
+    };
+    // A viewer preference, not part of presets: on by default for reduced motion
+    this.calmVisuals = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    this.sceneManager.setCalm(this.calmVisuals);
 
     this._onVisibilityChange = this._handleVisibilityChange.bind(this);
     document.addEventListener('visibilitychange', this._onVisibilityChange);
@@ -265,17 +279,6 @@ export class Engine {
     }
   }
 
-  /** Transpose every orbit's ScaleQuantizer to a new root note (e.g. 'F#'). */
-  transposeAll(newRoot) {
-    for (const gen of this.generators) {
-      if (gen._scaleQuantizer?.setRoot) {
-        gen._scaleQuantizer.setRoot(newRoot);
-      } else if (gen._scaleQuantizer) {
-        gen._scaleQuantizer.setConfig({ root: newRoot });
-      }
-    }
-  }
-
   /**
    * Create a per-orbit audio chain (quantizer + router + synth).
    * Each orbit gets its own independent scale and synth settings.
@@ -297,14 +300,40 @@ export class Engine {
   }
 
   /**
-   * Add an orbit (OrbitalNodes instance) with its own audio chain.
+   * Add an orbit (OrbitalNodes instance) with its own audio chain. Queued
+   * behind any preset load in progress.
    * @param {typeof import('./Generator.js').Generator} GeneratorClass
    * @param {object} [config] - Generator params (radius, nodeCount, etc.)
    * @param {object} [scaleConfig] - Per-orbit scale settings
    * @param {object} [synthConfig] - Per-orbit synth settings
-   * @returns {Promise<Generator>}
+   * @returns {Promise<Generator|null>}
    */
-  async addOrbit(GeneratorClass, config = {}, scaleConfig, synthConfig) {
+  addOrbit(GeneratorClass = OrbitalNodes, config = {}, scaleConfig, synthConfig) {
+    return this._enqueue(() => this._addOrbit(GeneratorClass, config, scaleConfig, synthConfig));
+  }
+
+  /** Remove an orbit, queued behind any preset load in progress. */
+  removeOrbit(generator) {
+    return this._enqueue(() => this.removeGenerator(generator));
+  }
+
+  /**
+   * Run engine mutations one at a time. A second preset load (or an orbit
+   * added mid-load) waits for the first instead of interleaving with it.
+   */
+  _enqueue(task) {
+    const run = this._opQueue.then(task, task);
+    this._opQueue = run.catch(() => {});
+    return run;
+  }
+
+  /** A radius clear of the existing orbits, within the Radius slider's range. */
+  _freeRadius() {
+    const radii = this.generators.map(g => g.params.radius);
+    return ORBIT_RADIUS_SLOTS.find(r => radii.every(x => Math.abs(x - r) >= 0.6)) ?? ORBIT_RADIUS_SLOTS[0];
+  }
+
+  async _addOrbit(GeneratorClass, config = {}, scaleConfig, synthConfig, flags = {}) {
     if (this.generators.length >= MAX_ORBITS) {
       console.warn(`Max ${MAX_ORBITS} orbits reached`);
       return null;
@@ -313,18 +342,22 @@ export class Engine {
 
     // Create per-orbit audio chain
     const audio = await this.createOrbitAudioChain(scaleConfig, synthConfig);
-
-    // Auto-assign radius if not specified
-    if (!config.radius) {
-      const existingRadii = this.generators.map(g => g.params?.radius || 3);
-      const maxRadius = existingRadii.length > 0 ? Math.max(...existingRadii) : 1.5;
-      config.radius = maxRadius + 1.5;
+    if (this.generators.length >= MAX_ORBITS) {
+      audio.synth.dispose();
+      return null;
     }
 
-    // Lowest free index, so a removed orbit's MIDI channel and palette are reused
+    if (!config.radius) config.radius = this._freeRadius();
+
+    // Keep a requested index (a loaded preset) when it's free, so MIDI
+    // channels, OSC addresses and colors survive a save and load. Otherwise
+    // take the lowest free one, reusing a removed orbit's slot.
     const usedIndices = new Set(this.generators.map(g => g.params.orbitIndex));
-    let orbitIndex = 0;
-    while (usedIndices.has(orbitIndex)) orbitIndex++;
+    let orbitIndex = config.orbitIndex;
+    if (!Number.isInteger(orbitIndex) || orbitIndex < 0 || orbitIndex >= MAX_ORBITS || usedIndices.has(orbitIndex)) {
+      orbitIndex = 0;
+      while (usedIndices.has(orbitIndex)) orbitIndex++;
+    }
     config.orbitIndex = orbitIndex;
 
     const generator = new GeneratorClass(
@@ -337,14 +370,13 @@ export class Engine {
     generator._scaleQuantizer = audio.quantizer;
     generator._toneOutput = audio.synth;
     generator._outputRouter = audio.router;
+    generator.outputMuted = !!flags.muted;
+    generator.outputSolo = !!flags.solo;
+    audio.router.isAudible = () => this.isOrbitAudible(generator);
 
     // Inherit current global spatial-audio state
-    if (audio.synth?.setSpatialEnabled) {
-      audio.synth.setSpatialEnabled(this.spatialEnabled);
-    }
-    if (audio.synth?.setSpatialAxis) {
-      audio.synth.setSpatialAxis(this.spatialAxis);
-    }
+    audio.synth.setSpatialEnabled(this.spatialEnabled);
+    audio.synth.setSpatialAxis(this.spatialAxis);
 
     // Create shared nebula on first orbit, share with all
     if (!this.nebula) {
@@ -354,11 +386,17 @@ export class Engine {
         config.radius,
         null // colors set after init
       );
+      this.nebula.spinSpeed = this.visual.spinSpeed;
     }
     generator._sharedNebula = this.nebula;
 
     generator.init();
-    this.generators.push(generator);
+    generator._crossingFlashEnabled = this.visual.crossingFlash;
+
+    // Orbits stay ordered by index, so orbit 1 is always the first entry
+    const insertAt = this.generators.findIndex(g => g.params.orbitIndex > orbitIndex);
+    if (insertAt === -1) this.generators.push(generator);
+    else this.generators.splice(insertAt, 0, generator);
 
     // First orbit: register nebula materials and rebuild trails with actual node colors
     if (this.generators.length === 1) {
@@ -373,12 +411,9 @@ export class Engine {
       }
     }
 
+    this._applyOrbitAudibility();
+    if (this.harmonicOrbit) this.harmonicOrbit.onOrbitAdded(generator);
     return generator;
-  }
-
-  /** Legacy addGenerator — wraps addOrbit for backward compat */
-  addGenerator(GeneratorClass, config) {
-    return this.addOrbit(GeneratorClass, config);
   }
 
   /** Remove a generator/orbit by index or reference */
@@ -391,12 +426,14 @@ export class Engine {
     }
     if (index >= 0 && index < this.generators.length) {
       const gen = this.generators[index];
+      if (this.harmonicOrbit) this.harmonicOrbit.onOrbitRemoved(gen);
 
       // Dispose per-orbit audio
       if (gen._toneOutput) gen._toneOutput.dispose();
 
       gen.dispose();
       this.generators.splice(index, 1);
+      this._applyOrbitAudibility();
 
       // If all orbits removed, clean up nebula
       if (this.generators.length === 0 && this.nebula) {
@@ -407,6 +444,56 @@ export class Engine {
         this.nebula = null;
       }
     }
+  }
+
+  // ── Per-orbit mute and solo ────────────────────────────────────
+
+  /** An orbit is heard unless it's muted, or another orbit is soloed. */
+  isOrbitAudible(generator) {
+    if (generator.outputMuted) return false;
+    const anySolo = this.generators.some(g => g.outputSolo);
+    return !anySolo || !!generator.outputSolo;
+  }
+
+  setOrbitMuted(generator, muted) {
+    generator.outputMuted = !!muted;
+    this._applyOrbitAudibility();
+  }
+
+  setOrbitSolo(generator, solo) {
+    generator.outputSolo = !!solo;
+    this._applyOrbitAudibility();
+  }
+
+  _applyOrbitAudibility() {
+    for (const gen of this.generators) {
+      gen._toneOutput?.setAudible(this.isOrbitAudible(gen));
+    }
+  }
+
+  // ── Scene-wide visual settings ─────────────────────────────────
+
+  /** Post FX plus the settings shared by every orbit. */
+  getVisualSettings() {
+    return { ...this.sceneManager.getPostFX(), ...this.visual };
+  }
+
+  /** Apply visual settings; keys that are missing are left as they are. */
+  setVisualSettings(settings) {
+    this.sceneManager.setPostFX(settings);
+    if ('spinSpeed' in settings) {
+      this.visual.spinSpeed = settings.spinSpeed;
+      if (this.nebula) this.nebula.spinSpeed = settings.spinSpeed;
+    }
+    if ('crossingFlash' in settings) {
+      this.visual.crossingFlash = !!settings.crossingFlash;
+      for (const gen of this.generators) gen._crossingFlashEnabled = this.visual.crossingFlash;
+    }
+  }
+
+  setCalmVisuals(calm) {
+    this.calmVisuals = !!calm;
+    this.sceneManager.setCalm(this.calmVisuals);
   }
 
   _nebulaMaterials() {
@@ -506,15 +593,43 @@ export class Engine {
     this._perfAccum = 0;
   }
 
-  /** Serialize entire engine state */
-  serialize() {
+  /** Registries the preset validator checks plugin IDs and params against. */
+  _presetContext() {
+    const factories = { motion: createAlgorithm, trigger: createTrigger, mapping: createMapping };
+    return {
+      motionIds: getAlgorithmIds(),
+      triggerIds: getTriggerIds(),
+      mappingIds: getMappingIds(),
+      describe: (kind, id) => {
+        try {
+          const plugin = factories[kind](id);
+          const params = plugin.getParams();
+          plugin.dispose?.();
+          return params;
+        } catch {
+          return [];
+        }
+      },
+    };
+  }
+
+  /**
+   * Serialize the whole setup.
+   * @param {{ includeIO?: boolean }} [opts] - share links leave out MIDI/OSC settings
+   */
+  serialize({ includeIO = true } = {}) {
     const cam = this.sceneManager.camera;
     const tgt = this.sceneManager.controls.target;
-    return {
+    const data = {
+      app: PRESET_APP,
+      version: PRESET_VERSION,
       orbits: this.generators.map(g => ({
         generator: g.serialize(),
-        scale: g._scaleQuantizer.getConfig(),
+        // The orbit's own key, not a Harmonic Orbit transposition of it
+        scale: { ...g._scaleQuantizer.getConfig(), root: this.harmonicOrbit?.homeRootFor(g) ?? g._scaleQuantizer.getConfig().root },
         synth: g._toneOutput.getConfig(),
+        muted: !!g.outputMuted,
+        solo: !!g.outputSolo,
       })),
       camera: {
         position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
@@ -525,86 +640,100 @@ export class Engine {
         axis: this.spatialAxis,
       },
       harmonic: this.harmonicOrbit ? this.harmonicOrbit.serialize() : undefined,
+      visual: this.getVisualSettings(),
     };
+    if (includeIO) {
+      const midi = this.midiOutput.config;
+      const osc = this.oscOutput.config;
+      data.io = {
+        midi: { channel: midi.channel, noteDurationMs: midi.noteDurationMs, velocityCurve: midi.velocityCurve },
+        osc: { wsHost: osc.wsHost, wsPort: osc.wsPort },
+      };
+    }
+    return data;
   }
 
-  /** Restore engine state from saved data */
-  async deserialize(data, GeneratorClass = OrbitalNodes) {
-    // Camera
-    if (data.camera) {
-      const p = data.camera.position;
-      const t = data.camera.target;
-      this.sceneManager.camera.position.set(p.x, p.y, p.z);
-      this.sceneManager.controls.target.set(t.x, t.y, t.z);
-      this.sceneManager.controls.update();
-    }
-
-    // Spatial audio (set before orbits so new orbits inherit on recreate)
-    if (data.spatial) {
-      this.setSpatialEnabled(!!data.spatial.enabled);
-      if (data.spatial.axis) {
-        this.setSpatialAxis(data.spatial.axis);
-      }
-    }
-
-    // New multi-orbit format
-    if (data.orbits) {
-      // Remove all existing orbits
-      while (this.generators.length > 0) {
-        this.removeGenerator(0);
-      }
-
-      // Recreate each orbit
-      for (const orbitData of data.orbits) {
-        const gen = await this.addOrbit(
-          GeneratorClass,
-          orbitData.generator?.params || {},
-          orbitData.scale,
-          orbitData.synth
-        );
-
-        // Restore motion algorithm
-        if (gen && orbitData.generator?.motionAlgorithm) {
-          gen._switchAlgorithm(orbitData.generator.motionAlgorithm.id);
-          if (gen._motionAlgo) {
-            gen._motionAlgo.deserialize(orbitData.generator.motionAlgorithm);
-          }
+  /**
+   * Load a preset (a file, a shared link, or a bundled preset). It is
+   * validated before anything changes; if applying it fails part-way, the
+   * previous setup is restored. Resolves with any warnings.
+   * @throws {PresetError}
+   */
+  loadPreset(data) {
+    return this._enqueue(async () => {
+      const ctx = this._presetContext();
+      const { preset, warnings } = sanitizePreset(data, ctx);
+      const snapshot = this.serialize();
+      try {
+        await this._applyPreset(preset);
+      } catch (e) {
+        console.error('Preset failed to apply; restoring the previous setup', e);
+        try {
+          await this._applyPreset(sanitizePreset(snapshot, ctx).preset);
+        } catch (restoreError) {
+          console.error('Restoring the previous setup failed', restoreError);
         }
+        throw new PresetError('That preset could not be loaded. Your previous setup was restored.');
+      }
+      return { warnings };
+    });
+  }
 
-        // Restore trigger method
-        if (gen && orbitData.generator?.triggerMethod) {
-          gen._switchTrigger(orbitData.generator.triggerMethod.id);
-          if (gen._triggerMethod) {
-            gen._triggerMethod.deserialize(orbitData.generator.triggerMethod);
-          }
-        }
+  /** @deprecated Use loadPreset. */
+  deserialize(data) {
+    return this.loadPreset(data);
+  }
 
-        // Restore note mapping
-        if (gen && orbitData.generator?.noteMapping) {
-          gen._switchMapping(orbitData.generator.noteMapping.id);
-          if (gen._noteMapping) {
-            gen._noteMapping.deserialize(orbitData.generator.noteMapping);
-          }
-        }
+  /** Apply a preset that has already been through sanitizePreset. */
+  async _applyPreset(p) {
+    const sm = this.sceneManager;
+
+    if (p.camera) {
+      // A preset's camera wins over a running orbit or Home animation
+      sm.stopCameraMotion();
+      sm.camera.position.set(p.camera.position.x, p.camera.position.y, p.camera.position.z);
+      sm.controls.target.set(p.camera.target.x, p.camera.target.y, p.camera.target.z);
+      sm.controls.update();
+    }
+
+    // Sections a preset leaves out go back to their defaults, so nothing
+    // lingers from the previous setup. MIDI/OSC settings belong to the
+    // listener's setup and are only changed when the preset has them.
+    const spatial = p.spatial ?? { enabled: false, axis: 'horizontal' };
+    this.setSpatialEnabled(spatial.enabled);
+    this.setSpatialAxis(spatial.axis);
+    this.setVisualSettings({ ...VISUAL_DEFAULTS, ...p.visual });
+    if (p.io?.midi) this.midiOutput.setConfig(p.io.midi);
+    if (p.io?.osc) this.oscOutput.setConfig(p.io.osc);
+
+    // Release the drones and hand orbits their own keys back before they go
+    const h = this.harmonicOrbit;
+    if (h?.params.enabled) h.setParam('enabled', false);
+
+    while (this.generators.length > 0) {
+      this.removeGenerator(0);
+    }
+
+    for (const orbit of p.orbits) {
+      const g = orbit.generator;
+      const gen = await this._addOrbit(OrbitalNodes, g.params, orbit.scale, orbit.synth,
+        { muted: orbit.muted, solo: orbit.solo });
+      if (!gen) continue;
+      gen._switchAlgorithm(g.motionAlgorithm ? g.motionAlgorithm.id : 'none');
+      if (gen._motionAlgo && g.motionAlgorithm) gen._motionAlgo.deserialize(g.motionAlgorithm);
+      if (g.triggerMethod) {
+        gen._switchTrigger(g.triggerMethod.id);
+        gen._triggerMethod.deserialize(g.triggerMethod);
+      }
+      if (g.noteMapping) {
+        gen._switchMapping(g.noteMapping.id);
+        gen._noteMapping.deserialize(g.noteMapping);
       }
     }
 
-    // Legacy format (single orbit)
-    if (data.scale && data.synth && data.generators) {
-      while (this.generators.length > 0) {
-        this.removeGenerator(0);
-      }
-      const params = data.generators[0]?.params || {};
-      const gen = await this.addOrbit(GeneratorClass, params, data.scale, data.synth);
-      if (gen && data.generators[0]) {
-        gen.deserialize(data.generators[0]);
-      }
-    }
-
-    // Restore harmonic orbit AFTER orbits so enable-drones captures correct roots
-    if (data.harmonic && this.harmonicOrbit) {
-      this.harmonicOrbit.deserialize(data.harmonic);
-    }
+    // After the orbits, so turning the Harmonic Orbit on captures their keys
+    if (h) h.deserialize(p.harmonic ?? { params: { enabled: false } });
+    this._applyOutputGates();
   }
 
   dispose() {

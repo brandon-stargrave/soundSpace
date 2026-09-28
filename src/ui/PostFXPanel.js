@@ -1,6 +1,11 @@
+import { section, divider, rangeRow, toggleRow } from './controls.js';
+
+const pct = (v) => `${Math.round(v * 100)}%`;
+
 /**
- * Post-processing effects controls — global, not per-orbit.
- * Controls bloom, afterimage, vignette, and chromatic aberration.
+ * Scene-wide visual controls (not per-orbit): bloom, motion trails,
+ * vignette, chromatic aberration, nebula spin and calm visuals. Everything
+ * here except Calm is saved with presets.
  */
 export class PostFXPanel {
   constructor(sceneManager, engine) {
@@ -10,139 +15,45 @@ export class PostFXPanel {
   }
 
   render() {
-    const section = document.createElement('details');
-    section.className = 'config-section';
-    section.open = false;
+    const { el, body } = section('Visuals');
+    const v = this.engine.getVisualSettings();
+    const set = (key) => (val) => this.engine.setVisualSettings({ [key]: val });
 
-    const summary = document.createElement('summary');
-    summary.textContent = 'Post FX';
-    section.appendChild(summary);
+    body.appendChild(toggleRow({
+      label: 'Calm visuals',
+      value: this.engine.calmVisuals,
+      help: 'Turns off chromatic aberration and shooting stars and softens light pulses. On by default when your system asks for reduced motion.',
+      onChange: (val) => this.engine.setCalmVisuals(val),
+    }));
 
-    const body = document.createElement('div');
-    body.className = 'section-body';
+    body.appendChild(divider('Bloom'));
+    body.appendChild(rangeRow({ label: 'Strength', min: 0, max: 2, step: 0.05, value: v.bloomStrength, onInput: set('bloomStrength') }));
+    body.appendChild(rangeRow({ label: 'Radius', min: 0, max: 1, step: 0.05, value: v.bloomRadius, onInput: set('bloomRadius') }));
+    body.appendChild(rangeRow({
+      label: 'Threshold', min: 0, max: 1, step: 0.05, value: v.bloomThreshold, onInput: set('bloomThreshold'),
+      help: 'How bright something must be to glow. Lower it for more glow everywhere.',
+    }));
 
-    // Bloom
-    body.appendChild(this._createDivider('Bloom'));
-    body.appendChild(this._createRangeRow('Strength', 0, 2, 0.05,
-      this.sm.bloomPass.strength,
-      (val) => { this.sm.bloomPass.strength = val; }
-    ));
-    body.appendChild(this._createRangeRow('Radius', 0, 1, 0.05,
-      this.sm.bloomPass.radius,
-      (val) => { this.sm.bloomPass.radius = val; }
-    ));
-    body.appendChild(this._createRangeRow('Threshold', 0, 1, 0.05,
-      this.sm.bloomPass.threshold,
-      (val) => { this.sm.bloomPass.threshold = val; }
-    ));
+    body.appendChild(divider('Scene'));
+    body.appendChild(rangeRow({ label: 'Motion Trails', min: 0, max: 0.95, step: 0.01, format: pct, value: v.trails, onInput: set('trails') }));
+    body.appendChild(rangeRow({
+      label: 'Nebula Spin', min: 0, max: 0.15, step: 0.005, value: v.spinSpeed, onInput: set('spinSpeed'),
+      help: 'Rotation of the central nebula and the orbit rings, shared by every orbit.',
+    }));
+    body.appendChild(rangeRow({ label: 'Vignette', min: 0, max: 1.5, step: 0.05, value: v.vignetteDarkness, onInput: set('vignetteDarkness') }));
+    body.appendChild(rangeRow({ label: 'Vignette Size', min: 0.5, max: 2, step: 0.05, value: v.vignetteOffset, onInput: set('vignetteOffset') }));
 
-    // Afterimage
-    if (this.sm.afterimagePass) {
-      body.appendChild(this._createDivider('Motion Trails'));
-      body.appendChild(this._createRangeRow('Trail Amount', 0, 0.95, 0.01,
-        this.sm.afterimagePass.uniforms.damp.value,
-        (val) => { this.sm.afterimagePass.uniforms.damp.value = val; }
-      ));
-    }
+    body.appendChild(divider('On each note'));
+    body.appendChild(rangeRow({
+      label: 'Color Split', min: 0, max: 1, step: 0.05, format: pct, value: v.chromaticIntensity, onInput: set('chromaticIntensity'),
+      help: 'Chromatic aberration flash when a note plays.',
+    }));
+    body.appendChild(toggleRow({
+      label: 'Crossing Flash', value: v.crossingFlash, onChange: set('crossingFlash'),
+      help: 'A soft flash in the two nodes\' mixed color where they cross.',
+    }));
 
-    // Vignette
-    if (this.sm.vignettePass) {
-      body.appendChild(this._createDivider('Vignette'));
-      body.appendChild(this._createRangeRow('Darkness', 0, 1, 0.05,
-        this.sm.vignettePass.uniforms['darkness'].value,
-        (val) => { this.sm.vignettePass.uniforms['darkness'].value = val; }
-      ));
-      body.appendChild(this._createRangeRow('Offset', 0.5, 2, 0.05,
-        this.sm.vignettePass.uniforms['offset'].value,
-        (val) => { this.sm.vignettePass.uniforms['offset'].value = val; }
-      ));
-    }
-
-    // Chromatic Aberration
-    if (this.sm.rgbShiftPass) {
-      body.appendChild(this._createDivider('Chromatic Aberration'));
-      body.appendChild(this._createRangeRow('Trigger Intensity', 0, 1, 0.05,
-        this.sm._rgbShiftMaxIntensity ?? 0.4,
-        (val) => { this.sm._rgbShiftMaxIntensity = val; }
-      ));
-    }
-
-    // Crossing Flash
-    if (this.engine) {
-      body.appendChild(this._createDivider('Crossing Flash'));
-      const flashOn = this.engine.generators[0]?._crossingFlashEnabled ?? false;
-      body.appendChild(this._createToggleRow('Color Mix Flash', flashOn, (val) => {
-        for (const gen of this.engine.generators) {
-          gen._crossingFlashEnabled = val;
-        }
-      }));
-    }
-
-    section.appendChild(body);
-    this.el = section;
-    return section;
-  }
-
-  _createRangeRow(labelText, min, max, step, currentValue, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = min;
-    input.max = max;
-    input.step = step;
-    input.value = currentValue;
-
-    const valueDisplay = document.createElement('span');
-    valueDisplay.className = 'control-value';
-    valueDisplay.textContent = typeof currentValue === 'number' ? currentValue.toFixed(2) : currentValue;
-
-    input.addEventListener('input', () => {
-      const val = parseFloat(input.value);
-      valueDisplay.textContent = val.toFixed(2);
-      onChange(val);
-    });
-
-    row.appendChild(input);
-    row.appendChild(valueDisplay);
-    return row;
-  }
-
-  _createToggleRow(labelText, value, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-    const toggle = document.createElement('label');
-    toggle.className = 'toggle-switch';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = value;
-    const slider = document.createElement('span');
-    slider.className = 'toggle-slider';
-    input.addEventListener('change', () => onChange(input.checked));
-    toggle.appendChild(input);
-    toggle.appendChild(slider);
-    row.appendChild(toggle);
-    return row;
-  }
-
-  _createDivider(text) {
-    const wrapper = document.createElement('div');
-    wrapper.style.marginTop = '10px';
-    const label = document.createElement('div');
-    label.style.cssText = 'font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: #666688; margin-bottom: 6px;';
-    label.textContent = text;
-    const div = document.createElement('div');
-    div.className = 'divider';
-    wrapper.appendChild(label);
-    wrapper.appendChild(div);
-    return wrapper;
+    this.el = el;
+    return el;
   }
 }

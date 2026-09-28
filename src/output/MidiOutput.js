@@ -26,6 +26,12 @@ export class MidiOutput {
     this._harmonicHeld = new Map();          // voiceId → held note numbers
     this._harmonicHeldChannels = new Map();  // voiceId → 0-based channel those notes were sent on
     this._usedChannels = new Set();          // 0-based channels this session has sent notes on
+    this._pendingOffs = new Map();           // channel*128+note → note-off timer
+  }
+
+  /** MIDI channel (1–16) for an orbit: Base Channel for orbit 1, then counting up and wrapping. */
+  channelForOrbit(orbitIndex) {
+    return ((this.config.channel - 1 + orbitIndex) % 16) + 1;
   }
 
   /**
@@ -66,22 +72,31 @@ export class MidiOutput {
     if (!this.enabled || this.muted || !this.selectedOutput) return;
     if (!Number.isFinite(quantized.midiNote)) return;
 
-    // Per-orbit channel: orbit 0 → config.channel, orbit 1 → config.channel+1, etc.
-    const orbitOffset = triggerEvent.orbitIndex || 0;
-    const channel = clamp(this.config.channel - 1 + orbitOffset, 0, 15);
+    const channel = this.channelForOrbit(triggerEvent.orbitIndex || 0) - 1;
     const velocity = Math.round(
       this._applyVelocityCurve(triggerEvent.velocity) * 127
     );
     const note = clamp(quantized.midiNote, 0, 127);
+    const output = this.selectedOutput;
+
+    // A repeat of a note that's still sounding ends the earlier one first, so
+    // the earlier note's scheduled note-off can't cut the new one short
+    const key = channel * 128 + note;
+    const pending = this._pendingOffs.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      output.send([0x80 | channel, note, 0]);
+    }
 
     // Note On
-    this.selectedOutput.send([0x90 | channel, note, velocity]);
+    output.send([0x90 | channel, note, velocity]);
 
-    // Note Off (scheduled)
-    this.selectedOutput.send(
-      [0x80 | channel, note, 0],
-      performance.now() + this.config.noteDurationMs
-    );
+    // Note Off. A cancellable timer rather than a timestamped send, which
+    // can't be withdrawn once queued.
+    this._pendingOffs.set(key, setTimeout(() => {
+      this._pendingOffs.delete(key);
+      try { output.send([0x80 | channel, note, 0]); } catch {}
+    }, this.config.noteDurationMs));
     this._usedChannels.add(channel);
 
     // Optional CC
@@ -152,6 +167,12 @@ export class MidiOutput {
    */
   allNotesOff() {
     for (const voiceId of this._harmonicHeld.keys()) this.releaseHarmonic(voiceId);
+    // End short notes now rather than when their timers fire
+    for (const [key, timer] of this._pendingOffs) {
+      clearTimeout(timer);
+      try { this.selectedOutput?.send([0x80 | Math.floor(key / 128), key % 128, 0]); } catch {}
+    }
+    this._pendingOffs.clear();
     if (!this.selectedOutput) return;
     for (const ch of this._usedChannels) {
       try { this.selectedOutput.send([0xB0 | ch, CC_ALL_NOTES_OFF, 0]); } catch {}

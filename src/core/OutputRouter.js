@@ -6,6 +6,8 @@ export class OutputRouter {
   constructor(scaleQuantizer) {
     this.scaleQuantizer = scaleQuantizer;
     this.outputs = [];
+    // Optional check that silences this route entirely (per-orbit mute/solo)
+    this.isAudible = null;
   }
 
   /** Register an output (ToneOutput, MidiOutput, OscOutput) */
@@ -27,6 +29,7 @@ export class OutputRouter {
    */
   route(triggerEvent) {
     const quantized = this.scaleQuantizer.quantize(triggerEvent.rawValue);
+    if (this.isAudible && !this.isAudible()) return quantized;
 
     for (const output of this.outputs) {
       if (output.enabled) {

@@ -1,11 +1,13 @@
 /**
- * ProgressionWalker — pluggable algorithms for stepping through a sequence of
- * scale-degree (or semitone) offsets from a base root. Each call to `next()`
- * advances the internal state and returns an offset descriptor:
- *   { degreeIndex: N }  — scale degree relative to the base root (N indexes the active scale)
- *   { semitones: S }    — semitone step from the current root (for fifths / modal interchange)
+ * ProgressionWalker — pluggable algorithms for stepping through a chord
+ * progression. Each call to `next()` advances the internal state and returns
+ * a descriptor:
+ *   { degreeIndex: N } — a diatonic chord: degree N (0 = I … 6 = vii) of the
+ *                        home key's 7-note scale. The key doesn't change.
+ *   { semitones: S }   — a key change of S semitones from the current key
+ *                        (the fifths walks). The new key's I chord plays.
  *
- * The caller (HarmonicOrbit) resolves the descriptor to a new root pitch class.
+ * The caller (HarmonicOrbit) builds the chord from the descriptor.
  */
 
 export const PROGRESSION_IDS = [
@@ -17,6 +19,16 @@ export const PROGRESSION_IDS = [
   'fifthsUp',
   'fifthsRandom',
 ];
+
+// Chord degrees: I = 0, ii = 1, iii = 2, IV = 3, V = 4, vi = 5, vii = 6
+const PATTERNS = {
+  romanPopAxis: [0, 4, 5, 3],     // I – V – vi – IV
+  romanCanonical: [0, 3, 4, 0],   // I – IV – V – I
+  romanJazzii_v_I: [1, 4, 0],     // ii – V – I
+};
+
+// Degrees a random walk settles on: I, IV, V and vi
+const STABLE_DEGREES = [0, 3, 4, 5];
 
 export class ProgressionWalker {
   constructor(id = 'pedal') {
@@ -31,62 +43,56 @@ export class ProgressionWalker {
   }
 
   /**
-   * Advance and return the next offset descriptor.
-   * @param {number} scaleIntervalCount - length of the active scale's interval array
+   * Advance and return the next descriptor.
+   * @param {{ flatSeven?: boolean }} [key] - whether the home key's 7th degree
+   *        is a whole step below the tonic (minor, dorian, mixolydian), which
+   *        makes ♭VII a diatonic chord the pedal can visit
    */
-  next(scaleIntervalCount = 7) {
+  next(key = {}) {
     switch (this.id) {
-      case 'pedal':            return this._pedal(scaleIntervalCount);
-      case 'romanPopAxis':     return this._cycle([0, 4, 5, 3], scaleIntervalCount);
-      case 'romanCanonical':   return this._cycle([0, 3, 4, 0], scaleIntervalCount);
-      case 'romanJazzii_v_I':  return this._cycle([1, 4, 0], scaleIntervalCount);
-      case 'randomWalk':       return this._randomWalk(scaleIntervalCount);
-      case 'fifthsUp':         return { semitones: 7 };
-      case 'fifthsRandom':     return { semitones: Math.random() < 0.5 ? 7 : -7 };
-      default:                 return { degreeIndex: 0 };
+      case 'pedal':           return this._pedal(key);
+      case 'romanPopAxis':
+      case 'romanCanonical':
+      case 'romanJazzii_v_I': return this._cycle(PATTERNS[this.id]);
+      case 'randomWalk':      return this._randomWalk();
+      case 'fifthsUp':        return { semitones: 7 };
+      case 'fifthsRandom':    return { semitones: Math.random() < 0.5 ? 7 : -7 };
+      default:                return { degreeIndex: 0 };
     }
   }
 
-  /** Sit on tonic for 6 steps, then briefly step to a neighbor, then return. */
-  _pedal(len) {
+  /** Sit on the tonic for 6 steps, then briefly visit IV, V (or ♭VII), then return. */
+  _pedal(key) {
     this._pedalCounter++;
     if (this._pedalCounter > 6) {
       this._pedalCounter = 0;
-      // Random pick from {IV, v, bVII} — scale-degree indices 3, 4, 6 (clamped to scale length)
-      const candidates = [3, 4, 6].filter(i => i < len);
-      const pick = candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
-      return { degreeIndex: pick };
+      const candidates = key.flatSeven ? [3, 4, 6] : [3, 4];
+      return { degreeIndex: candidates[Math.floor(Math.random() * candidates.length)] };
     }
     return { degreeIndex: 0 };
   }
 
-  /** Step through a fixed pattern, wrapping. Each index is modded to scale length. */
-  _cycle(pattern, len) {
-    const deg = pattern[this._step % pattern.length] % len;
+  /** Step through a fixed pattern, wrapping. */
+  _cycle(pattern) {
+    const deg = pattern[this._step % pattern.length];
     this._step++;
     return { degreeIndex: deg };
   }
 
-  /** Weighted ±1 random walk favoring stable degrees (0, 2, 4). */
-  _randomWalk(len) {
-    // Move ±1 (or stay) with modest bias toward staying on stable degrees
+  /** Step up or down a degree (or stay), leaning back toward I, IV, V and vi. */
+  _randomWalk() {
     const step = [-1, 0, 1][Math.floor(Math.random() * 3)];
-    let next = (this._currentDegree + step + len) % len;
-
-    // If we landed on an unstable degree (not 0, 2, or 4), roll a weighted
-    // correction toward the nearest stable degree 40% of the time.
-    const stableSet = new Set([0, 2, 4]);
-    if (!stableSet.has(next) && Math.random() < 0.4) {
-      const stable = [...stableSet].filter(d => d < len);
-      let best = stable[0];
-      let bestD = Math.abs(best - next);
-      for (const s of stable) {
-        const d = Math.abs(s - next);
+    let next = (this._currentDegree + step + 7) % 7;
+    if (!STABLE_DEGREES.includes(next) && Math.random() < 0.4) {
+      // Nearest stable degree, measured around the circle of degrees
+      let best = 0;
+      let bestD = Infinity;
+      for (const s of STABLE_DEGREES) {
+        const d = Math.min(Math.abs(s - next), 7 - Math.abs(s - next));
         if (d < bestD) { best = s; bestD = d; }
       }
       next = best;
     }
-
     this._currentDegree = next;
     return { degreeIndex: next };
   }

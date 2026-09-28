@@ -1,154 +1,121 @@
+import { section, divider, rangeRow, selectRow, toggleRow, numberRow } from './controls.js';
+import { PARAM_GROUPS } from '../generators/orbitParams.js';
+
+// Params that rebuild the orbit's geometry: while a slider drags, apply at
+// most once per frame
+const REBUILD_KEYS = new Set(['nodeCount', 'trailLength', 'nodeSize']);
+
+// Selects whose change adds or removes the plugin's own controls
+const PLUGIN_KEYS = new Set(['motionAlgorithm', 'triggerMethod', 'noteMapping']);
+
 /**
- * Renders controls for the active generator's parameters.
- * Auto-generates UI from the generator's getParams() descriptors.
+ * Renders controls for the active generator's parameters, grouped into
+ * Orbit, Motion, Trigger, Notes and Look. Built from the generator's
+ * getParams() descriptors.
  */
 export class GeneratorPanel {
-  constructor(engine, orbitIndex = 0) {
+  constructor(engine, orbitPosition = 0) {
     this.engine = engine;
-    this._orbitIndex = orbitIndex;
+    this._orbitPosition = orbitPosition;
     this.el = null;
     this.controlsContainer = null;
+    this._pending = new Map();
+    this._frame = null;
   }
 
   render() {
-    const section = document.createElement('details');
-    section.className = 'config-section';
-    section.open = true;
-
-    const summary = document.createElement('summary');
-    summary.textContent = 'Generator';
-    section.appendChild(summary);
-
-    const body = document.createElement('div');
-    body.className = 'section-body';
-
-    this.controlsContainer = document.createElement('div');
-    body.appendChild(this.controlsContainer);
-
-    section.appendChild(body);
-    this.el = section;
-
+    const gen = this.engine.generators[this._orbitPosition];
+    const num = gen ? gen.params.orbitIndex + 1 : 1;
+    const { el, body } = section(`Orbit ${num} · Generator`, { open: true });
+    this.controlsContainer = body;
+    this.el = el;
     this._buildControls();
-    return section;
+    return el;
   }
 
   _buildControls() {
     this.controlsContainer.innerHTML = '';
-    const gen = this.engine.generators[this._orbitIndex];
+    const gen = this.engine.generators[this._orbitPosition];
     if (!gen) return;
 
     const params = gen.getParams();
-    for (const param of params) {
-      const row = this._createControl(param, gen);
-      if (row) this.controlsContainer.appendChild(row);
+    for (const group of PARAM_GROUPS) {
+      const items = params.filter(p => (p.group || 'look') === group.id);
+      if (!items.length) continue;
+      this.controlsContainer.appendChild(divider(group.label));
+      for (const param of items) {
+        const row = this._createControl(param, gen);
+        if (row) this.controlsContainer.appendChild(row);
+      }
     }
   }
 
-  _createControl(param, generator) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
+  /** Apply a value, coalescing geometry rebuilds to one per animation frame. */
+  _set(gen, key, value) {
+    if (!REBUILD_KEYS.has(key)) {
+      gen.setParam(key, value);
+      return;
+    }
+    this._pending.set(key, value);
+    if (this._frame) return;
+    this._frame = requestAnimationFrame(() => {
+      this._frame = null;
+      for (const [k, v] of this._pending) gen.setParam(k, v);
+      this._pending.clear();
+    });
+  }
 
-    const label = document.createElement('label');
-    label.textContent = param.label;
-    row.appendChild(label);
-
+  _createControl(param, gen) {
+    const help = param.help;
     switch (param.type) {
       case 'range':
-        return this._createRange(row, param, generator);
+        return rangeRow({
+          label: param.label,
+          min: param.min, max: param.max, step: param.step,
+          value: param.value,
+          unit: param.unit,
+          help: param.disabled ? 'Set by the Motion algorithm while one is selected.' : help,
+          disabled: param.disabled,
+          onInput: (v) => this._set(gen, param.key, v),
+        });
       case 'select':
-        return this._createSelect(row, param, generator);
+        return selectRow({
+          label: param.label,
+          options: param.options,
+          labels: param.optionLabels || prettyLabels(param.options),
+          value: param.value,
+          help,
+          onChange: (v) => {
+            gen.setParam(param.key, v);
+            // Show or hide the plugin's own controls (and Node Speed's disabled state)
+            if (PLUGIN_KEYS.has(param.key)) requestAnimationFrame(() => this._buildControls());
+          },
+        });
       case 'toggle':
-        return this._createToggle(row, param, generator);
+        return toggleRow({ label: param.label, value: param.value, help, onChange: (v) => gen.setParam(param.key, v) });
       case 'number':
-        return this._createNumber(row, param, generator);
+        return numberRow({
+          label: param.label, value: param.value,
+          min: param.min ?? -Infinity, max: param.max ?? Infinity, step: param.step || 1,
+          help, onChange: (v) => gen.setParam(param.key, v),
+        });
       default:
         return null;
     }
   }
 
-  _createRange(row, param, generator) {
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = param.min;
-    input.max = param.max;
-    input.step = param.step;
-    input.value = param.value;
-
-    const valueDisplay = document.createElement('span');
-    valueDisplay.className = 'control-value';
-    valueDisplay.textContent = param.value;
-
-    input.addEventListener('input', () => {
-      const val = parseFloat(input.value);
-      valueDisplay.textContent = Number.isInteger(val) ? val : val.toFixed(2);
-      generator.setParam(param.key, val);
-    });
-
-    row.appendChild(input);
-    row.appendChild(valueDisplay);
-    return row;
-  }
-
-  _createSelect(row, param, generator) {
-    const select = document.createElement('select');
-    for (const opt of param.options) {
-      const option = document.createElement('option');
-      option.value = opt;
-      option.textContent = opt;
-      if (opt === param.value) option.selected = true;
-      select.appendChild(option);
-    }
-
-    select.addEventListener('change', () => {
-      generator.setParam(param.key, select.value);
-      // Rebuild controls when algorithm or trigger changes (shows/hides dynamic params)
-      if (param.key === 'motionAlgorithm' || param.key === 'triggerMethod' || param.key === 'noteMapping') {
-        requestAnimationFrame(() => this._buildControls());
-      }
-    });
-
-    row.appendChild(select);
-    return row;
-  }
-
-  _createToggle(row, param, generator) {
-    const toggle = document.createElement('label');
-    toggle.className = 'toggle-switch';
-
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = param.value;
-
-    const slider = document.createElement('span');
-    slider.className = 'toggle-slider';
-
-    input.addEventListener('change', () => {
-      generator.setParam(param.key, input.checked);
-    });
-
-    toggle.appendChild(input);
-    toggle.appendChild(slider);
-    row.appendChild(toggle);
-    return row;
-  }
-
-  _createNumber(row, param, generator) {
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.min = param.min;
-    input.max = param.max;
-    input.step = param.step || 1;
-    input.value = param.value;
-
-    input.addEventListener('change', () => {
-      generator.setParam(param.key, parseFloat(input.value));
-    });
-
-    row.appendChild(input);
-    return row;
-  }
-
   refresh() {
     this._buildControls();
   }
+}
+
+/** 'euclidean' → 'Euclidean', 'random_walk' → 'Random walk'. */
+function prettyLabels(options = []) {
+  const labels = {};
+  for (const opt of options) {
+    if (typeof opt !== 'string') continue;
+    const words = opt.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    labels[opt] = words.charAt(0).toUpperCase() + words.slice(1);
+  }
+  return labels;
 }

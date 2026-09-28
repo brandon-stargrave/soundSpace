@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import * as Tone from 'tone';
 import {
   polygonVertexPos,
   createStellaOctangulaEdges,
@@ -17,10 +16,11 @@ import {
   DEFAULT_SCALE_CONFIG,
 } from '../util/constants.js';
 import { angleDelta } from '../util/math.js';
+import { parentScale, hasFlatSeven, isMinorKey, diatonicChord, chordRoot, voiceChord, bassNote, nearestOffset } from './harmony.js';
 
 const TWO_PI = Math.PI * 2;
 
-export const CHORD_VOICINGS = ['triad', 'sus2', 'sus4', 'seventh', 'octaveDoubled'];
+export { CHORD_VOICINGS } from '../util/constants.js';
 
 const DEFAULT_PARAMS = {
   enabled: false,
@@ -138,11 +138,14 @@ export class HarmonicOrbit {
     this._rotOuter = 0;
     this._rotInner = 0;
 
-    this._baseRoot = 'C';
-    this._originalRoots = new Map();
-    this._currentRoot = 'C';
+    // Harmony state. The home key is orbit 1's own root and scale; the key
+    // moves only for the fifths progressions (_keyOffset, in semitones).
+    this._keyOffset = 0;
+    this._degree = 0;               // current chord: degree of the home key
+    this._padCenter = null;         // middle of the last pad chord, for smooth voicing
     this._currentMidiPad = [];
     this._currentMidiBass = [];
+    this.onHarmonyChange = null;    // panel callback when the chord changes
 
     // External silencing state — separate from user-facing `params.enabled`.
     // When `true` the drones are released and no transpose events fire, but
@@ -170,7 +173,7 @@ export class HarmonicOrbit {
     this._bass.setEnabled(this.params.bassEnabled);
     this._audioInitialized = true;
 
-    if (this.params.enabled) this._captureBaseAndStartDrones();
+    if (this.params.enabled) this._startHarmony();
   }
 
   update(deltaTime) {
@@ -185,7 +188,7 @@ export class HarmonicOrbit {
 
     // Advance cycle position
     if (this.params.speedMode === 'periodSync') {
-      const srcOrbit = this.engine.generators[this.params.syncSourceIndex];
+      const srcOrbit = this._syncSource();
       if (srcOrbit && srcOrbit.nodes && srcOrbit.nodes[0]) {
         const srcAngle = srcOrbit.nodes[0].angle;
         const dA = angleDelta(srcAngle, this._sourcePrevAngle);
@@ -238,6 +241,58 @@ export class HarmonicOrbit {
     this._updateTravelerAppearance();
   }
 
+  /** The orbit periodSync follows: matched by orbit number, so removing another orbit doesn't change it. */
+  _syncSource() {
+    const gens = this.engine.generators;
+    return gens.find(g => g.params.orbitIndex === this.params.syncSourceIndex) ?? gens[0];
+  }
+
+  /** An orbit's own key (a key change is applied on top, as a transpose). */
+  homeRootFor(gen) {
+    return gen?._scaleQuantizer?.getConfig().root;
+  }
+
+  /** Change an orbit's own key from the Scale panel. Orbit 1's key is the progression's home key. */
+  setHomeRoot(gen, root) {
+    gen._scaleQuantizer.setConfig({ root });
+    if (gen === this.engine.generators[0] && this.params.enabled) this._refreshDrones();
+  }
+
+  /** A new orbit joins the current key. */
+  onOrbitAdded(gen) {
+    if (this.params.enabled) gen._scaleQuantizer?.setTranspose(nearestOffset(this._keyOffset));
+  }
+
+  onOrbitRemoved() {}
+
+  /** Apply the current key change to every orbit's notes. */
+  _applyKeyToOrbits() {
+    const shift = this.params.enabled ? nearestOffset(this._keyOffset) : 0;
+    for (const gen of this.engine.generators) gen._scaleQuantizer?.setTranspose(shift);
+  }
+
+  /** Note names of the pad chord that's sounding, lowest first. */
+  currentChordNames() {
+    return this._currentMidiPad.map(n => NOTE_NAMES[((n % 12) + 12) % 12]);
+  }
+
+  /** The current key, e.g. "G major". */
+  homeKeyName() {
+    const { tonic, parent } = this._key();
+    return `${NOTE_NAMES[((tonic % 12) + 12) % 12]} ${isMinorKey(parent) ? 'minor' : 'major'}`;
+  }
+
+  /** The current key: tonic pitch class (home root plus any key change) and its 7-note scale. */
+  _key() {
+    const orbit0 = this.engine.generators[0];
+    const home = NOTE_NAME_TO_SEMITONE[orbit0?._scaleQuantizer?.getConfig().root ?? DEFAULT_SCALE_CONFIG.root] ?? 0;
+    const scaleType = this._getActiveScaleType();
+    const intervals = scaleType === 'custom'
+      ? (orbit0?._scaleQuantizer?.getConfig().customDegrees || SCALES.pentatonic_minor)
+      : (SCALES[scaleType] || SCALES.pentatonic_minor);
+    return { home, tonic: home + nearestOffset(this._keyOffset), parent: parentScale(intervals) };
+  }
+
   _resolveRadius() {
     if (this.params.radius !== null && this.params.radius !== undefined) {
       return this.params.radius;
@@ -256,42 +311,28 @@ export class HarmonicOrbit {
     // the interaction paused mid-flight.
     if (this._silenced) return;
 
-    // Decide: does this crossing trigger a transpose?
+    // Decide: does this corner move to the next chord?
     const roll = Math.random();
-    const shouldTranspose = roll < this.params.transposeChance;
-    if (!shouldTranspose) return; // silent pass-through
+    if (roll >= this.params.transposeChance) return; // silent pass-through
 
-    // Active scale (from orbit 0 or default)
-    const scaleType = this._getActiveScaleType();
-    const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
-
-    const descriptor = this._progression.next(scaleIntervals.length);
-    let newRootSemitone;
-    if (descriptor.semitones !== undefined) {
-      // Semitone descriptors step from the current root (fifthsUp walks the circle)
-      const currentSemitone = NOTE_NAME_TO_SEMITONE[this._currentRoot] ?? 0;
-      newRootSemitone = currentSemitone + descriptor.semitones;
-    } else {
-      // Degree descriptors are positions in the scale built on the base root
-      const baseSemitone = NOTE_NAME_TO_SEMITONE[this._baseRoot] ?? 0;
-      newRootSemitone = baseSemitone + (scaleIntervals[descriptor.degreeIndex ?? 0] || 0);
-    }
-    const newRoot = NOTE_NAMES[((newRootSemitone % 12) + 12) % 12];
-
-    // Snapshot previous notes to detect "no change" situations
     const prevPadNotes = [...this._currentMidiPad];
     const prevBassNotes = [...this._currentMidiBass];
-    const prevRoot = this._currentRoot;
+    const prevKey = this._keyOffset;
 
-    this._currentRoot = newRoot;
-    if (this.engine.transposeAll) this.engine.transposeAll(newRoot);
-    this._updateDronePitches(newRoot, scaleIntervals);
+    const descriptor = this._progression.next({ flatSeven: hasFlatSeven(this._key().parent) });
+    if (descriptor.semitones !== undefined) {
+      // A key change: every orbit moves with it, and the new key's I chord plays
+      this._keyOffset = (((this._keyOffset + descriptor.semitones) % 12) + 12) % 12;
+      this._degree = 0;
+      this._applyKeyToOrbits();
+    } else {
+      this._degree = descriptor.degreeIndex ?? 0;
+    }
+    this._updateDronePitches(prevKey !== this._keyOffset);
 
-    // If neither the pad chord nor the bass note changed, suppress all
-    // visual feedback — a vertex hit that produced no audible change
-    // shouldn't draw attention to itself.
+    // A corner that produced no audible change doesn't draw attention to itself
     const notesChanged = (
-      prevRoot !== newRoot ||
+      prevKey !== this._keyOffset ||
       !this._arraysEqual(prevPadNotes, this._currentMidiPad) ||
       !this._arraysEqual(prevBassNotes, this._currentMidiBass)
     );
@@ -362,54 +403,31 @@ export class HarmonicOrbit {
     return DEFAULT_SCALE_CONFIG.scaleType;
   }
 
-  /** Build the set of scale degree indices for the configured chord voicing. */
-  _chordDegreesFor(voicing, scaleIntervalCount) {
-    const clampDeg = (d) => ((d % scaleIntervalCount) + scaleIntervalCount) % scaleIntervalCount;
-    switch (voicing) {
-      case 'sus2':          return [0, 1, 4].map(clampDeg);
-      case 'sus4':          return [0, 3, 4].map(clampDeg);
-      case 'seventh':       return [0, 2, 4, 6].map(clampDeg);
-      case 'octaveDoubled':
-        // Returns degree indices; we handle the octave offsets at resolve time
-        return [[0, 0], [4, 0], [0, 1], [2, 1]]; // [degIdx, octaveOffset]
-      case 'triad':
-      default:              return [0, 2, 4].map(clampDeg);
-    }
-  }
-
-  _updateDronePitches(rootName, scaleIntervals) {
+  /**
+   * Build and hold the current chord: diatonic chord `_degree` of the current
+   * key on the pad (voiced near the previous chord), its root on the bass.
+   * @param {boolean} [keyChanged] - also announce the new key over OSC
+   */
+  _updateDronePitches(keyChanged = false) {
     if (!this._audioInitialized) return;
-    const voicing = this.params.chordVoicing;
+    const { tonic, parent } = this._key();
 
-    // Resolve pad voicing to midi + frequencies
-    let padMidi = [];
-    let padFreqs = [];
-    const padOct = this.params.padOctave;
+    const padTonic = (this.params.padOctave + 1) * 12 + tonic;
+    const chord = diatonicChord(parent, this._degree, this.params.chordVoicing);
+    const center = this._padCenter ?? padTonic + 7;
+    const padMidi = voiceChord(chord, padTonic, center);
+    this._padCenter = padMidi.reduce((a, b) => a + b, 0) / padMidi.length;
 
-    const voicingDegrees = this._chordDegreesFor(voicing, scaleIntervals.length);
-    if (voicing === 'octaveDoubled') {
-      for (const [degIdx, octOff] of voicingDegrees) {
-        const interval = scaleIntervals[degIdx] ?? 0;
-        const midi = this._midiFor(rootName, padOct + octOff, interval);
-        padMidi.push(midi);
-        padFreqs.push(Tone.Frequency(midi, 'midi').toFrequency());
-      }
-    } else {
-      for (const degIdx of voicingDegrees) {
-        const interval = scaleIntervals[degIdx] ?? 0;
-        const midi = this._midiFor(rootName, padOct, interval);
-        padMidi.push(midi);
-        padFreqs.push(Tone.Frequency(midi, 'midi').toFrequency());
-      }
-    }
+    const bassTonic = (this.params.bassOctave + 1) * 12 + tonic;
+    const bassMidi = bassNote(bassTonic, chordRoot(parent, this._degree));
 
-    // Bass is always a single sustained root at configured octave
-    const bassOct = this.params.bassOctave;
-    const bassMidi = this._midiFor(rootName, bassOct, 0);
-    const bassFreq = Tone.Frequency(bassMidi, 'midi').toFrequency();
+    const toHz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+    const padFreqs = padMidi.map(toHz);
+    const bassFreq = toHz(bassMidi);
 
     this._currentMidiPad = padMidi;
     this._currentMidiBass = [bassMidi];
+    this.onHarmonyChange?.();
 
     // While muted or paused the notes are only remembered; setSilenced(false)
     // holds them again
@@ -419,11 +437,16 @@ export class HarmonicOrbit {
     if (this._pad) this._pad.hold(padFreqs);
     if (this._bass) this._bass.hold([bassFreq]);
 
-    // Drive MIDI/OSC outputs if enabled
-    this._sendExternal(rootName, padMidi, padFreqs, bassMidi, bassFreq);
+    const rootName = NOTE_NAMES[((tonic + chordRoot(parent, this._degree)) % 12 + 12) % 12];
+    this._sendExternal(rootName, padMidi, padFreqs, bassMidi, bassFreq, keyChanged);
   }
 
-  _sendExternal(rootName, padMidi, padFreqs, bassMidi, bassFreq) {
+  /** Rebuild the held chord from the current settings (voicing, octaves, key). */
+  _refreshDrones() {
+    if (this.params.enabled && this._audioInitialized) this._updateDronePitches();
+  }
+
+  _sendExternal(rootName, padMidi, padFreqs, bassMidi, bassFreq, keyChanged = false) {
     const midi = this.engine.midiOutput;
     const osc = this.engine.oscOutput;
 
@@ -443,15 +466,28 @@ export class HarmonicOrbit {
     if (this.params.oscEnabled && osc?.sendHarmonicHold) {
       if (this.params.padEnabled) osc.sendHarmonicHold('pad', rootName, padMidi, padFreqs);
       if (this.params.bassEnabled) osc.sendHarmonicHold('bass', rootName, [bassMidi], [bassFreq]);
-      // Also emit a dedicated transpose event so external tools can follow the root
-      const rootSem = NOTE_NAME_TO_SEMITONE[rootName] ?? 0;
-      if (osc.sendHarmonicTranspose) osc.sendHarmonicTranspose(rootName, rootSem);
+      // Announce a key change so external tools can follow it
+      if (keyChanged && osc.sendHarmonicTranspose) {
+        const { tonic } = this._key();
+        const pc = ((tonic % 12) + 12) % 12;
+        osc.sendHarmonicTranspose(NOTE_NAMES[pc], pc);
+      }
     }
   }
 
-  _midiFor(rootName, octave, scaleIntervalSemi) {
-    const semi = NOTE_NAME_TO_SEMITONE[rootName] ?? 0;
-    return (octave + 1) * 12 + semi + scaleIntervalSemi;
+  /** Tell MIDI and OSC listeners the drones stopped. */
+  _releaseExternal() {
+    const midi = this.engine.midiOutput;
+    if (this.params.midiEnabled && midi?.releaseHarmonic) {
+      midi.releaseHarmonic('pad');
+      midi.releaseHarmonic('bass');
+    }
+    const osc = this.engine.oscOutput;
+    // An empty chord (note count 0) means the voice was released
+    if (this.params.oscEnabled && osc?.sendHarmonicHold) {
+      osc.sendHarmonicHold('pad', '', [], []);
+      osc.sendHarmonicHold('bass', '', [], []);
+    }
   }
 
   _buildVisuals() {
@@ -696,38 +732,26 @@ export class HarmonicOrbit {
     }
   }
 
-  _captureBaseAndStartDrones() {
-    this._originalRoots.clear();
-    for (const gen of this.engine.generators) {
-      if (gen._scaleQuantizer) {
-        this._originalRoots.set(gen, gen._scaleQuantizer.getConfig().root);
-      }
-    }
-    const orbit0 = this.engine.generators[0];
-    this._baseRoot = orbit0 && orbit0._scaleQuantizer
-      ? orbit0._scaleQuantizer.getConfig().root
-      : DEFAULT_SCALE_CONFIG.root;
-    this._currentRoot = this._baseRoot;
+  /** Start at the home key's I chord. */
+  _startHarmony() {
+    this._keyOffset = 0;
+    this._degree = 0;
+    this._padCenter = null;
     this._progression.reset();
-
-    const scaleType = this._getActiveScaleType();
-    const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
-    this._updateDronePitches(this._baseRoot, scaleIntervals);
+    this._applyKeyToOrbits();
+    this._updateDronePitches(true);
   }
 
-  _stopAndRestoreRoots() {
+  /** Release the drones and put every orbit back in its own key. */
+  _stopHarmony() {
     if (this._pad) this._pad.release();
     if (this._bass) this._bass.release();
-    // Release MIDI notes too
-    const midi = this.engine.midiOutput;
-    if (this.params.midiEnabled && midi?.releaseHarmonic) {
-      midi.releaseHarmonic('pad');
-      midi.releaseHarmonic('bass');
-    }
-    for (const [gen, root] of this._originalRoots) {
-      if (gen._scaleQuantizer) gen._scaleQuantizer.setConfig({ root });
-    }
-    this._originalRoots.clear();
+    this._releaseExternal();
+    this._keyOffset = 0;
+    for (const gen of this.engine.generators) gen._scaleQuantizer?.setTranspose(0);
+    this._currentMidiPad = [];
+    this._currentMidiBass = [];
+    this.onHarmonyChange?.();
   }
 
   setParam(key, value) {
@@ -742,9 +766,9 @@ export class HarmonicOrbit {
       case 'enabled':
         this._group.visible = !!value;
         if (value && !prev) {
-          if (this._audioInitialized) this._captureBaseAndStartDrones();
+          if (this._audioInitialized) this._startHarmony();
         } else if (!value && prev) {
-          this._stopAndRestoreRoots();
+          this._stopHarmony();
         }
         break;
       case 'sides':
@@ -757,18 +781,15 @@ export class HarmonicOrbit {
         // The wireframe geometry was sized at build time, so scale the group
         if (this._traveler) this._traveler.scale.setScalar(value / this._builtTravelerSize);
         break;
-      case 'progressionId':
-        this._progression = new ProgressionWalker(value);
-        break;
       case 'chordVoicing':
       case 'padOctave':
       case 'bassOctave':
-        // Recompute + rehold current chord/drone
-        if (this._audioInitialized && this.params.enabled) {
-          const scaleType = this._getActiveScaleType();
-          const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
-          this._updateDronePitches(this._currentRoot, scaleIntervals);
-        }
+        // Re-voice the current chord in the new register or shape
+        this._padCenter = null;
+        this._refreshDrones();
+        break;
+      case 'progressionId':
+        this._progression = new ProgressionWalker(value);
         break;
       case 'padEnabled':
         if (this._pad) this._pad.setEnabled(value);
@@ -806,25 +827,19 @@ export class HarmonicOrbit {
       case 'speedMode':
         if (value === 'periodSync') {
           this._sourceTotalAngle = 0;
-          const srcOrbit = this.engine.generators[this.params.syncSourceIndex];
-          this._sourcePrevAngle = srcOrbit?.nodes?.[0]?.angle ?? 0;
+          this._sourcePrevAngle = this._syncSource()?.nodes?.[0]?.angle ?? 0;
         }
         break;
-      case 'syncSourceIndex': {
+      case 'syncSourceIndex':
         this._sourceTotalAngle = 0;
-        const src = this.engine.generators[value];
-        this._sourcePrevAngle = src?.nodes?.[0]?.angle ?? 0;
+        this._sourcePrevAngle = this._syncSource()?.nodes?.[0]?.angle ?? 0;
         break;
-      }
     }
   }
 
-  /** Re-send the current chord/drone to external outputs (used when toggling). */
+  /** Re-send the current chord/drone to every output (used when toggling). */
   _resendExternal() {
-    if (!this._audioInitialized) return;
-    const scaleType = this._getActiveScaleType();
-    const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
-    this._updateDronePitches(this._currentRoot, scaleIntervals);
+    this._refreshDrones();
   }
 
   /**
@@ -841,19 +856,10 @@ export class HarmonicOrbit {
       // Release local drones immediately
       if (this._pad) this._pad.release();
       if (this._bass) this._bass.release();
-      // Release external MIDI notes if we had been sending
-      const midi = this.engine.midiOutput;
-      if (this.params.midiEnabled && midi?.releaseHarmonic) {
-        midi.releaseHarmonic('pad');
-        midi.releaseHarmonic('bass');
-      }
+      this._releaseExternal();
     } else if (!this._silenced && wasSilenced) {
-      // Restore drones at the current root if harmonic orbit is still enabled
-      if (this.params.enabled && this._audioInitialized) {
-        const scaleType = this._getActiveScaleType();
-        const scaleIntervals = SCALES[scaleType] || SCALES.pentatonic_minor;
-        this._updateDronePitches(this._currentRoot, scaleIntervals);
-      }
+      // Restore the drones if the Harmonic Orbit is still on
+      this._refreshDrones();
     }
   }
 
@@ -877,7 +883,6 @@ export class HarmonicOrbit {
     return {
       params: { ...this.params },
       progression: this._progression.serialize(),
-      baseRoot: this._baseRoot,
       cyclePos: this._cyclePos,
       padConfig: this.getPadConfig(),
       bassConfig: this.getBassConfig(),
@@ -886,25 +891,26 @@ export class HarmonicOrbit {
 
   deserialize(data) {
     if (!data) return;
-    if (data.params) {
-      for (const [k, v] of Object.entries(data.params)) {
-        if (k in this.params) this.setParam(k, v);
-      }
+    // Settings a preset leaves out go back to their defaults
+    const { enabled, ...params } = { ...DEFAULT_PARAMS, ...(data.params || {}) };
+    if (this._pad) this._pad.setConfig(data.padConfig ?? structuredClone(DEFAULT_PAD_SYNTH_CONFIG));
+    if (this._bass) this._bass.setConfig(data.bassConfig ?? structuredClone(DEFAULT_BASS_SYNTH_CONFIG));
+    for (const [k, v] of Object.entries(params)) {
+      if (k in this.params) this.setParam(k, v);
     }
+    // Turned on last, so the drones start with every other setting in place
+    this.setParam('enabled', enabled);
     if (data.progression) this._progression.deserialize(data.progression);
-    if (data.baseRoot) this._baseRoot = data.baseRoot;
     if (typeof data.cyclePos === 'number') {
       this._cyclePos = data.cyclePos;
       // Re-derive the last vertex so the restored position isn't read as a fresh crossing
       this._lastVertexIdx = Math.floor(this._cyclePos * this.params.sides) % this.params.sides;
       this._updateTravelerPosition(this._cyclePos);
     }
-    if (data.padConfig && this._pad) this._pad.setConfig(data.padConfig);
-    if (data.bassConfig && this._bass) this._bass.setConfig(data.bassConfig);
   }
 
   dispose() {
-    this._stopAndRestoreRoots();
+    this._stopHarmony();
     if (this._pad) { this._pad.dispose(); this._pad = null; }
     if (this._bass) { this._bass.dispose(); this._bass = null; }
     this._disposeHoloTrail();

@@ -6,6 +6,16 @@ import { createEffect, createSynthVoice, setEffectParam, disposeNode } from './e
 // Fade applied when this output is removed, so tails don't cut off with a click
 const REMOVE_FADE_SECONDS = 0.04;
 
+/** Merge plain objects recursively; arrays and values in `patch` replace those in `base`. */
+function mergeDeep(base, patch) {
+  const out = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    const isPlain = value && typeof value === 'object' && !Array.isArray(value);
+    out[key] = isPlain && base[key] && typeof base[key] === 'object' ? mergeDeep(base[key], value) : value;
+  }
+  return out;
+}
+
 /**
  * Local audio output using Tone.js.
  * Uses a voice pool architecture: each note gets its own mono synth. With
@@ -95,6 +105,12 @@ export class ToneOutput {
     return Number(rel) + 0.05; // small pad
   }
 
+  /** Fade this orbit's output in or out (per-orbit mute and solo). */
+  setAudible(audible) {
+    this._audible = !!audible;
+    if (this._output) this._output.gain.rampTo(this._audible ? 1 : 0, 0.03);
+  }
+
   /** Enable/disable spatial panning. Voices bypass their panners while it's off. */
   setSpatialEnabled(v) {
     this._spatialEnabled = !!v;
@@ -125,7 +141,7 @@ export class ToneOutput {
   _buildSynthChain() {
     this._disposeChain();
 
-    this._output = new Tone.Gain(1);
+    this._output = new Tone.Gain(this._audible === false ? 0 : 1);
     this._output.connect(Tone.getDestination());
 
     // Shared effects chain: fx[0] → fx[1] → ... → fx[last] → output
@@ -191,7 +207,10 @@ export class ToneOutput {
   setConfig(updates) {
     const previousRelease = this._estimateReleaseTail();
     const previousType = this.config.synthType;
-    Object.assign(this.config, structuredClone(updates));
+    const { synthOptions, ...rest } = structuredClone(updates);
+    Object.assign(this.config, rest);
+    // Synth options arrive as partial edits (one envelope stage at a time)
+    if (synthOptions) this.config.synthOptions = mergeDeep(this.config.synthOptions || {}, synthOptions);
     if (!this._initialized) return;
 
     if ('effects' in updates) {

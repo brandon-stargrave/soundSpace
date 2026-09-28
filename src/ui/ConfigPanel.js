@@ -6,9 +6,9 @@ import { MidiOscPanel } from './MidiOscPanel.js';
 import { HarmonicOrbitPanel } from './HarmonicOrbitPanel.js';
 import { RecordPanel } from './RecordPanel.js';
 import { Presets } from './Presets.js';
-import { OrbitalNodes } from '../generators/OrbitalNodes.js';
-
-const MAX_ORBITS = 5;
+import { showToast } from './toast.js';
+import { rangeRow, toggleRow } from './controls.js';
+import { MAX_ORBITS } from '../core/presetSchema.js';
 
 /**
  * Main configuration panel manager.
@@ -20,26 +20,62 @@ export class ConfigPanel {
     this.container = document.getElementById('panel-content');
     this.panel = document.getElementById('config-panel');
     this._collapsed = false;
-    this._selectedOrbit = 0;
+    this._selectedOrbit = 0;          // position in engine.generators
     this._genSection = null;          // per-orbit Generator panel container (top)
     this._sectionContainer = null;    // per-orbit Scale + Synth container (below Harmonic)
     this._orbitBar = null;
-    this._orbitClipboard = null; // stored orbit config for copy/paste
+    this._orbitClipboard = null;      // stored orbit config for copy/paste
+    this.onCollapsedChange = null;
   }
 
   init() {
+    // Record and Presets keep their state (a take in progress, a load in
+    // progress) across panel rebuilds, so they're created once and re-attached
+    this._record = new RecordPanel(this.engine.sceneManager, this.engine);
+    this._recordEl = this._record.render();
+    this._recordEl.dataset.section = 'record';
+    this.presets = new Presets(this.engine);
+    this._presetsEl = this.presets.render();
+    this._presetsEl.dataset.section = 'presets';
+    this.presets._onLoad = () => {
+      this._selectedOrbit = 0;
+      this.refresh();
+    };
+
+    this._build();
+
+    // Toggle button
+    const toggle = document.getElementById('panel-toggle');
+    toggle.addEventListener('click', () => this.setCollapsed(!this._collapsed));
+    // On a phone the open panel would cover most of the scene
+    if (window.matchMedia?.('(max-width: 700px)').matches) this.setCollapsed(true);
+  }
+
+  /** Rebuild every section so it shows the engine's current state (e.g. after a preset load). */
+  refresh() {
+    const open = this._openSections();
+    const scroll = this.container.scrollTop;
+    this._build(open);
+    this.container.scrollTop = scroll;
+  }
+
+  _build(open = null) {
+    this.container.innerHTML = '';
+
     // Panel title
     const title = document.createElement('div');
     title.className = 'panel-title';
     title.textContent = 'soundSpace';
+    this._titleRow = title;
     this.container.appendChild(title);
 
     // Transport controls
     this.container.appendChild(this._createTransportControls());
 
     // Orbit selector bar
-    this._orbitBar = this._createOrbitBar();
+    this._orbitBar = document.createElement('div');
     this.container.appendChild(this._orbitBar);
+    this._refreshOrbitBar();
 
     // Per-orbit Generator panel container (sits above Harmonic Orbit so
     // Harmonic is the 2nd section in the list). Rebuilt when orbit changes.
@@ -47,48 +83,39 @@ export class ConfigPanel {
     this.container.appendChild(this._genSection);
 
     // Harmonic Orbit (global — polygon root transposer + pad/bass drones).
-    // Placed right after the Generator section so it reads as the 2nd panel.
     this._harmonicPanel = new HarmonicOrbitPanel(this.engine);
-    this.container.appendChild(this._harmonicPanel.render());
+    this.container.appendChild(this._tag(this._harmonicPanel.render(), 'harmonic'));
 
     // Remaining per-orbit sections (Scale + Synth) — rebuilt on orbit change.
     this._sectionContainer = document.createElement('div');
     this.container.appendChild(this._sectionContainer);
-
-    // Build sections for initial orbit (fills both containers above)
     this._buildSections();
 
-    // Post FX (global, not per-orbit)
-    const postFX = new PostFXPanel(this.engine.sceneManager, this.engine);
-    this.container.appendChild(postFX.render());
+    // Global sections
+    this.container.appendChild(this._tag(new PostFXPanel(this.engine.sceneManager, this.engine).render(), 'postfx'));
+    this.container.appendChild(this._tag(new MidiOscPanel(this.engine).render(), 'midiosc'));
+    this.container.appendChild(this._recordEl);
+    this.container.appendChild(this._presetsEl);
 
-    // MIDI / OSC (global, shared across orbits)
-    const midiOsc = new MidiOscPanel(this.engine);
-    this.container.appendChild(midiOsc.render());
+    if (open) this._restoreOpen(open);
+  }
 
-    // Record / Export (global — viewport resolution + video/audio capture)
-    const record = new RecordPanel(this.engine.sceneManager, this.engine);
-    this.container.appendChild(record.render());
+  _tag(el, key) {
+    el.dataset.section = key;
+    return el;
+  }
 
-    // Presets (global, not per-orbit)
-    this.presets = new Presets(this.engine);
-    this.presets._onLoad = () => {
-      this._selectedOrbit = 0;
-      this._refreshOrbitBar();
-      this._buildSections();
-      // The Harmonic Orbit panel is built once, so rebuild it to show the loaded values
-      const oldHarmonic = this._harmonicPanel.el;
-      const freshHarmonic = this._harmonicPanel.render();
-      freshHarmonic.open = oldHarmonic.open;
-      oldHarmonic.replaceWith(freshHarmonic);
-    };
-    this.container.appendChild(this.presets.render());
+  /** Which sections are open, keyed by data-section. */
+  _openSections() {
+    const open = new Map();
+    for (const d of this.container.querySelectorAll('details[data-section]')) open.set(d.dataset.section, d.open);
+    return open;
+  }
 
-    // Toggle button
-    const toggle = document.getElementById('panel-toggle');
-    toggle.addEventListener('click', () => this.setCollapsed(!this._collapsed));
-    // On a phone the open panel would cover most of the scene
-    if (window.matchMedia?.('(max-width: 700px)').matches) this.setCollapsed(true);
+  _restoreOpen(open) {
+    for (const d of this.container.querySelectorAll('details[data-section]')) {
+      if (open.has(d.dataset.section)) d.open = open.get(d.dataset.section);
+    }
   }
 
   isCollapsed() {
@@ -101,6 +128,8 @@ export class ConfigPanel {
     const toggle = document.getElementById('panel-toggle');
     toggle.setAttribute('aria-expanded', String(!this._collapsed));
     toggle.setAttribute('aria-label', this._collapsed ? 'Show panel' : 'Hide panel');
+    // Keep the hidden panel's controls out of the Tab order
+    this.container.inert = this._collapsed;
     // The letterboxed viewport (Record panel) centers within the visible
     // (non-panel) region — re-fit when the panel slides in/out so the
     // framing preview tracks the change. Wait for the slide transition
@@ -124,6 +153,7 @@ export class ConfigPanel {
 
   /** Reflect the engine's pause and mute state in the transport buttons. */
   _syncTransport() {
+    if (!this._playBtn) return;
     const paused = this.engine.paused;
     const muted = this.engine.muted;
     this._playBtn.innerHTML = paused
@@ -144,97 +174,106 @@ export class ConfigPanel {
 
   /** Rebuild the per-orbit sections (generator, scale, synth) */
   _buildSections() {
-    // Clear both containers (Generator lives in _genSection above the Harmonic
-    // Orbit panel; Scale + Synth live in _sectionContainer below it).
-    if (this._genSection) this._genSection.innerHTML = '';
-    if (this._sectionContainer) this._sectionContainer.innerHTML = '';
+    const open = this._openSections();
+    this._genSection.innerHTML = '';
+    this._sectionContainer.innerHTML = '';
+    this._selectedOrbit = Math.min(this._selectedOrbit, Math.max(0, this.engine.generators.length - 1));
     const orbit = this._getSelectedOrbit();
     if (!orbit) return;
 
-    // Generator params (top slot — above Harmonic Orbit)
-    const genPanel = new GeneratorPanel(this.engine, this._selectedOrbit);
-    this._genSection.appendChild(genPanel.render());
-
-    // Scale (per-orbit, below Harmonic Orbit)
-    const scalePanel = new ScalePanel(orbit._scaleQuantizer);
-    this._sectionContainer.appendChild(scalePanel.render());
-
-    // Synth (per-orbit, below Harmonic Orbit)
-    const outputPanel = new OutputPanel(orbit._toneOutput);
-    this._sectionContainer.appendChild(outputPanel.render());
+    this._genSection.appendChild(this._tag(new GeneratorPanel(this.engine, this._selectedOrbit).render(), 'generator'));
+    this._sectionContainer.appendChild(this._tag(new ScalePanel(orbit._scaleQuantizer, this.engine).render(), 'scale'));
+    this._sectionContainer.appendChild(this._tag(new OutputPanel(orbit._toneOutput).render(), 'synth'));
+    // Switching orbits keeps the same sections open
+    this._restoreOpen(open);
   }
 
-  /** Create the orbit selector bar */
-  _createOrbitBar() {
-    const bar = document.createElement('div');
-    bar.className = 'orbit-bar';
-    this._refreshOrbitBar(bar);
-    return bar;
-  }
-
-  _refreshOrbitBar(bar) {
-    if (!bar) bar = this._orbitBar;
+  _refreshOrbitBar() {
+    const bar = this._orbitBar;
     if (!bar) return;
     bar.innerHTML = '';
+    bar.className = 'orbit-bar-wrap';
 
     const orbits = this.engine.generators;
+    const row = document.createElement('div');
+    row.className = 'orbit-bar';
+    row.setAttribute('role', 'toolbar');
+    row.setAttribute('aria-label', 'Orbits');
 
-    for (let i = 0; i < orbits.length; i++) {
+    orbits.forEach((gen, i) => {
+      const num = gen.params.orbitIndex + 1;
       const btn = document.createElement('button');
       btn.className = 'orbit-select-btn';
-      if (i === this._selectedOrbit) btn.classList.add('active');
-      btn.textContent = i + 1;
-      btn.title = `Orbit ${i + 1}`;
-
+      btn.classList.toggle('active', i === this._selectedOrbit);
+      btn.classList.toggle('is-muted', !!gen.outputMuted);
+      btn.classList.toggle('is-solo', !!gen.outputSolo);
+      btn.textContent = num;
+      btn.title = `Orbit ${num}${gen.outputMuted ? ' (muted)' : ''}${gen.outputSolo ? ' (solo)' : ''}`;
+      btn.setAttribute('aria-label', btn.title);
+      btn.setAttribute('aria-pressed', String(i === this._selectedOrbit));
       btn.addEventListener('click', () => {
         this._selectedOrbit = i;
         this._refreshOrbitBar();
         this._buildSections();
       });
+      row.appendChild(btn);
+    });
 
-      bar.appendChild(btn);
-    }
-
-    // Add orbit button
     if (orbits.length < MAX_ORBITS) {
-      const addBtn = document.createElement('button');
-      addBtn.className = 'orbit-select-btn orbit-add-btn';
-      addBtn.textContent = '+';
-      addBtn.title = 'Add orbit';
-      addBtn.addEventListener('click', () => this._addOrbit());
-      bar.appendChild(addBtn);
+      row.appendChild(this._barButton('+', 'Add orbit', 'orbit-add-btn', () => this._addOrbit()));
     }
 
-    // Remove orbit button (only if more than 1 orbit)
+    const spacer = document.createElement('span');
+    spacer.className = 'orbit-bar-spacer';
+    row.appendChild(spacer);
+
+    row.appendChild(this._barButton('⧉', 'Copy orbit settings', 'orbit-copy-btn', () => this._copyOrbit()));
+    const paste = this._barButton('⧫', 'Paste orbit settings', 'orbit-paste-btn', () => this._pasteOrbit());
+    paste.disabled = !this._orbitClipboard;
+    row.appendChild(paste);
     if (orbits.length > 1) {
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'orbit-select-btn orbit-remove-btn';
-      removeBtn.textContent = '×';
-      removeBtn.title = 'Remove selected orbit';
-      removeBtn.addEventListener('click', () => this._removeOrbit());
-      bar.appendChild(removeBtn);
+      row.appendChild(this._barButton('×', 'Remove selected orbit', 'orbit-remove-btn', () => this._removeOrbit()));
     }
+    bar.appendChild(row);
 
-    // Copy/Paste buttons
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'orbit-select-btn orbit-copy-btn';
-    copyBtn.textContent = '⧉';
-    copyBtn.title = 'Copy orbit settings';
-    copyBtn.addEventListener('click', () => this._copyOrbit());
-    bar.appendChild(copyBtn);
+    // Mute and solo for the selected orbit
+    const gen = this._getSelectedOrbit();
+    if (!gen) return;
+    const num = gen.params.orbitIndex + 1;
+    const ms = document.createElement('div');
+    ms.className = 'orbit-ms-row';
+    const label = document.createElement('span');
+    label.textContent = `Orbit ${num}`;
+    ms.appendChild(label);
+    const muteBtn = this._barButton('Mute', `Mute orbit ${num}`, 'orbit-ms-btn', () => {
+      this.engine.setOrbitMuted(gen, !gen.outputMuted);
+      this._refreshOrbitBar();
+    });
+    muteBtn.setAttribute('aria-pressed', String(!!gen.outputMuted));
+    const soloBtn = this._barButton('Solo', `Solo orbit ${num}`, 'orbit-ms-btn', () => {
+      this.engine.setOrbitSolo(gen, !gen.outputSolo);
+      this._refreshOrbitBar();
+    });
+    soloBtn.setAttribute('aria-pressed', String(!!gen.outputSolo));
+    ms.appendChild(muteBtn);
+    ms.appendChild(soloBtn);
+    bar.appendChild(ms);
+  }
 
-    const pasteBtn = document.createElement('button');
-    pasteBtn.className = 'orbit-select-btn orbit-paste-btn';
-    pasteBtn.textContent = '⧫';
-    pasteBtn.title = 'Paste orbit settings';
-    if (!this._orbitClipboard) pasteBtn.style.opacity = '0.3';
-    pasteBtn.addEventListener('click', () => this._pasteOrbit());
-    bar.appendChild(pasteBtn);
+  _barButton(text, label, extraClass, onClick) {
+    const btn = document.createElement('button');
+    btn.className = `orbit-select-btn ${extraClass}`;
+    btn.textContent = text;
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.addEventListener('click', onClick);
+    return btn;
   }
 
   async _addOrbit() {
-    await this.engine.addOrbit(OrbitalNodes);
-    this._selectedOrbit = this.engine.generators.length - 1;
+    const gen = await this.engine.addOrbit();
+    if (!gen) return;
+    this._selectedOrbit = this.engine.generators.indexOf(gen);
     this._refreshOrbitBar();
     this._buildSections();
     this._harmonicPanel.refreshSyncSources();
@@ -248,7 +287,8 @@ export class ConfigPanel {
       scale: orbit._scaleQuantizer ? orbit._scaleQuantizer.getConfig() : null,
       synth: orbit._toneOutput ? orbit._toneOutput.getConfig() : null,
     };
-    this._refreshOrbitBar(); // update paste button opacity
+    this._refreshOrbitBar(); // enable the paste button
+    showToast(`Copied orbit ${orbit.params.orbitIndex + 1}'s settings.`, { duration: 3000 });
   }
 
   _pasteOrbit() {
@@ -258,60 +298,58 @@ export class ConfigPanel {
 
     const clip = this._orbitClipboard;
 
-    // Apply generator params (preserving radius and orbitIndex)
+    // Apply generator params in one rebuild (keeping this orbit's radius and number)
     if (clip.generator?.params) {
-      const keepRadius = orbit.params.radius;
-      const keepIndex = orbit.params.orbitIndex;
-      for (const [key, value] of Object.entries(clip.generator.params)) {
-        if (key === 'radius' || key === 'orbitIndex') continue;
-        orbit.setParam(key, value);
-      }
+      const { radius, orbitIndex, motionAlgorithm, triggerMethod, noteMapping, ...rest } = clip.generator.params;
+      Object.assign(orbit.params, structuredClone(rest));
+      orbit._rebuild();
     }
 
-    // Apply motion algorithm
-    if (clip.generator?.motionAlgorithm) {
-      orbit._switchAlgorithm(clip.generator.motionAlgorithm.id);
-      if (orbit._motionAlgo) orbit._motionAlgo.deserialize(clip.generator.motionAlgorithm);
-    } else {
-      orbit._switchAlgorithm('none');
-    }
+    orbit.params.motionAlgorithm = clip.generator?.motionAlgorithm?.id ?? 'none';
+    orbit._switchAlgorithm(orbit.params.motionAlgorithm);
+    if (orbit._motionAlgo && clip.generator?.motionAlgorithm) orbit._motionAlgo.deserialize(clip.generator.motionAlgorithm);
 
-    // Apply trigger method
     if (clip.generator?.triggerMethod) {
+      orbit.params.triggerMethod = clip.generator.triggerMethod.id;
       orbit._switchTrigger(clip.generator.triggerMethod.id);
-      if (orbit._triggerMethod) orbit._triggerMethod.deserialize(clip.generator.triggerMethod);
+      orbit._triggerMethod.deserialize(clip.generator.triggerMethod);
     }
 
-    // Apply note mapping
     if (clip.generator?.noteMapping) {
+      orbit.params.noteMapping = clip.generator.noteMapping.id;
       orbit._switchMapping(clip.generator.noteMapping.id);
-      if (orbit._noteMapping) orbit._noteMapping.deserialize(clip.generator.noteMapping);
+      orbit._noteMapping.deserialize(clip.generator.noteMapping);
     }
 
-    // Apply scale
-    if (clip.scale && orbit._scaleQuantizer) {
-      orbit._scaleQuantizer.setConfig(clip.scale);
-    }
-
-    // Apply synth
-    if (clip.synth && orbit._toneOutput) {
-      orbit._toneOutput.setConfig(clip.synth);
-    }
+    if (clip.scale && orbit._scaleQuantizer) orbit._scaleQuantizer.setConfig(clip.scale);
+    if (clip.synth && orbit._toneOutput) orbit._toneOutput.setConfig(clip.synth);
 
     this._buildSections(); // refresh UI
   }
 
-  _removeOrbit() {
+  async _removeOrbit() {
     if (this.engine.generators.length <= 1) return;
-    const removed = this._selectedOrbit;
-    this.engine.removeGenerator(removed);
-    this._selectedOrbit = Math.min(removed, this.engine.generators.length - 1);
+    const gen = this._getSelectedOrbit();
+    const num = gen.params.orbitIndex + 1;
+    const snapshot = this.engine.serialize();
+    await this.engine.removeOrbit(gen);
+    this._selectedOrbit = Math.min(this._selectedOrbit, this.engine.generators.length - 1);
     this._refreshOrbitBar();
     this._buildSections();
-    this._harmonicPanel.refreshSyncSources(removed);
+    this._harmonicPanel.refreshSyncSources();
+    showToast(`Removed orbit ${num}.`, {
+      actionLabel: 'Undo',
+      onAction: async () => {
+        await this.engine.loadPreset(snapshot);
+        this.refresh();
+      },
+    });
   }
 
   _createTransportControls() {
+    const wrap = document.createElement('div');
+    wrap.className = 'transport-wrap';
+
     const bar = document.createElement('div');
     bar.className = 'transport-bar';
 
@@ -325,33 +363,41 @@ export class ConfigPanel {
 
     bar.appendChild(this._playBtn);
     bar.appendChild(this._muteBtn);
+    wrap.appendChild(bar);
     this._syncTransport();
 
-    // Defocus mute toggle
-    const defocusRow = document.createElement('div');
-    defocusRow.className = 'control-row';
-    defocusRow.style.marginTop = '6px';
+    wrap.appendChild(rangeRow({
+      label: 'Volume',
+      min: 0, max: 1, step: 0.01,
+      value: this.engine.masterVolume,
+      format: v => `${Math.round(v * 100)}%`,
+      onInput: v => this.engine.setMasterVolume(v),
+    }));
 
-    const defocusLabel = document.createElement('label');
-    defocusLabel.textContent = 'Mute on defocus';
-    defocusLabel.style.fontSize = '10px';
-    defocusRow.appendChild(defocusLabel);
-
-    const defocusToggle = document.createElement('label');
-    defocusToggle.className = 'toggle-switch';
-    const defocusInput = document.createElement('input');
-    defocusInput.type = 'checkbox';
-    defocusInput.checked = this.engine.muteOnDefocus;
-    const defocusSlider = document.createElement('span');
-    defocusSlider.className = 'toggle-slider';
-    defocusInput.addEventListener('change', () => {
-      this.engine.muteOnDefocus = defocusInput.checked;
+    const vertical = toggleRow({
+      label: 'Phone upright',
+      value: this.engine.spatialAxis === 'vertical',
+      help: 'For a phone held upright with speakers at the top and bottom: the scene\'s top and bottom drive left and right.',
+      onChange: v => this.engine.setSpatialAxis(v ? 'vertical' : 'horizontal'),
     });
-    defocusToggle.appendChild(defocusInput);
-    defocusToggle.appendChild(defocusSlider);
-    defocusRow.appendChild(defocusToggle);
+    vertical.hidden = !this.engine.spatialEnabled;
+    wrap.appendChild(toggleRow({
+      label: '3D Panning',
+      value: this.engine.spatialEnabled,
+      help: 'Places each note where it happens in the scene. Best on headphones.',
+      onChange: v => {
+        this.engine.setSpatialEnabled(v);
+        vertical.hidden = !v;
+      },
+    }));
+    wrap.appendChild(vertical);
 
-    bar.appendChild(defocusRow);
-    return bar;
+    wrap.appendChild(toggleRow({
+      label: 'Silence when tab is hidden',
+      value: this.engine.muteOnDefocus,
+      help: 'Browsers pause the animation, and with it new notes, while the tab is hidden. This also silences the Harmonic Orbit drones.',
+      onChange: v => { this.engine.muteOnDefocus = v; },
+    }));
+    return wrap;
   }
 }

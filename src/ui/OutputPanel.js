@@ -1,5 +1,34 @@
+import { SYNTH_TYPES, NOTE_DURATIONS } from '../util/constants.js';
+import { section, divider, rangeRow, selectRow } from './controls.js';
+
+// Note lengths are musical divisions at Tone's default 120 BPM
+const DURATION_LABELS = {
+  '32n': '1/32 · 63 ms',
+  '16n': '1/16 · 125 ms',
+  '8n': '1/8 · 250 ms',
+  '4n': '1/4 · 500 ms',
+  '2n': '1/2 · 1 s',
+  '1n': 'Whole · 2 s',
+};
+
+const SYNTH_LABELS = {
+  Synth: 'Basic',
+  FMSynth: 'FM',
+  AMSynth: 'AM',
+  MonoSynth: 'Mono (filtered)',
+  MembraneSynth: 'Membrane (drum)',
+  MetalSynth: 'Metal (bell)',
+  PluckSynth: 'Pluck (string)',
+};
+
+const hz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)} kHz` : `${Math.round(v)} Hz`);
+const pct = (v) => `${Math.round(v * 100)}%`;
+const db = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`;
+const sec = (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`);
+
 /**
- * Output configuration panel: synth settings, MIDI, OSC.
+ * Per-orbit synth controls: voice type, note length, level, envelope, and
+ * the effects chain.
  */
 export class OutputPanel {
   constructor(toneOutput) {
@@ -8,252 +37,128 @@ export class OutputPanel {
   }
 
   render() {
-    const section = document.createElement('details');
-    section.className = 'config-section';
-    section.open = false;
+    const { el, body } = section('Synth', { open: true });
+    const out = this.toneOutput;
+    const cfg = out.getConfig();
 
-    const summary = document.createElement('summary');
-    summary.textContent = 'Synth';
-    section.appendChild(summary);
-
-    const body = document.createElement('div');
-    body.className = 'section-body';
-
-    const toneConfig = this.toneOutput.getConfig();
-
-    // Synth type selector
-    const synthTypes = ['Synth', 'FMSynth', 'AMSynth', 'MonoSynth', 'MembraneSynth', 'MetalSynth', 'PluckSynth'];
-    body.appendChild(this._createSelectRow('Type', synthTypes, toneConfig.synthType, (val) => {
-      this.toneOutput.setConfig({ synthType: val });
+    body.appendChild(selectRow({
+      label: 'Voice',
+      options: SYNTH_TYPES,
+      labels: SYNTH_LABELS,
+      value: cfg.synthType,
+      onChange: (val) => out.setConfig({ synthType: val }),
     }));
-
-    // Note duration
-    const durations = ['32n', '16n', '8n', '4n', '2n', '1n'];
-    body.appendChild(this._createSelectRow('Duration', durations, toneConfig.noteDuration, (val) => {
-      this.toneOutput.setConfig({ noteDuration: val });
+    body.appendChild(selectRow({
+      label: 'Note Length',
+      options: NOTE_DURATIONS,
+      labels: DURATION_LABELS,
+      value: cfg.noteDuration,
+      onChange: (val) => out.setConfig({ noteDuration: val }),
     }));
-
-    // Velocity scale
-    body.appendChild(this._createRangeRow('Volume', 0.1, 1.5, 0.05, toneConfig.velocityScale, (val) => {
-      this.toneOutput.setConfig({ velocityScale: val });
+    body.appendChild(rangeRow({
+      label: 'Level', min: 0.1, max: 1.5, step: 0.05, value: cfg.velocityScale, format: pct,
+      onInput: (val) => out.setConfig({ velocityScale: val }),
     }));
 
     // Envelope
-    const envelope = toneConfig.synthOptions?.envelope || {};
-    body.appendChild(this._createDivider('Envelope'));
-
-    body.appendChild(this._createRangeRow('Attack', 0.001, 1, 0.001, envelope.attack ?? 0.005, (val) => {
-      this._updateEnvelope('attack', val);
-    }));
-    body.appendChild(this._createRangeRow('Decay', 0.01, 2, 0.01, envelope.decay ?? 0.3, (val) => {
-      this._updateEnvelope('decay', val);
-    }));
-    body.appendChild(this._createRangeRow('Sustain', 0, 1, 0.01, envelope.sustain ?? 0.1, (val) => {
-      this._updateEnvelope('sustain', val);
-    }));
-    body.appendChild(this._createRangeRow('Release', 0.01, 4, 0.01, envelope.release ?? 0.8, (val) => {
-      this._updateEnvelope('release', val);
-    }));
-
-    // Filter
-    const filterFx = toneConfig.effects.find(f => f.type === 'Filter');
-    if (filterFx) {
-      body.appendChild(this._createDivider('Filter'));
-
-      body.appendChild(this._createRangeRow('Frequency', 20, 20000, 1, filterFx.options.frequency ?? 2000, (val) => {
-        this.toneOutput.setEffectParam('Filter', 'frequency', val);
-      }));
-      body.appendChild(this._createSelectRow('Type', ['lowpass', 'highpass', 'bandpass', 'notch'], filterFx.options.type || 'lowpass', (val) => {
-        this.toneOutput.setEffectParam('Filter', 'type', val);
-      }));
-      body.appendChild(this._createRangeRow('Resonance (Q)', 0.1, 15, 0.1, filterFx.options.Q ?? 1, (val) => {
-        this.toneOutput.setEffectParam('Filter', 'Q', val);
-      }));
-      body.appendChild(this._createSelectRow('Rolloff', ['-12', '-24', '-48', '-96'], String(filterFx.options.rolloff || -12), (val) => {
-        this.toneOutput.setEffectParam('Filter', 'rolloff', parseInt(val));
-      }));
-    }
-
-    // Chorus
-    const chorusFx = toneConfig.effects.find(f => f.type === 'Chorus');
-    if (chorusFx) {
-      body.appendChild(this._createDivider('Chorus'));
-
-      body.appendChild(this._createRangeRow('Mix', 0, 1, 0.01, chorusFx.wet, (val) => {
-        this.toneOutput.setEffectParam('Chorus', 'wet', val);
-      }));
-      body.appendChild(this._createRangeRow('Rate', 0.1, 10, 0.1, chorusFx.options.frequency ?? 1.5, (val) => {
-        this.toneOutput.setEffectParam('Chorus', 'frequency', val);
-      }));
-      body.appendChild(this._createRangeRow('Delay', 0.5, 20, 0.5, chorusFx.options.delayTime ?? 3.5, (val) => {
-        this.toneOutput.setEffectParam('Chorus', 'delayTime', val);
-      }));
-      body.appendChild(this._createRangeRow('Depth', 0, 1, 0.05, chorusFx.options.depth ?? 0.7, (val) => {
-        this.toneOutput.setEffectParam('Chorus', 'depth', val);
-      }));
-    }
-
-    // Reverb
-    const reverbFx = toneConfig.effects.find(f => f.type === 'Reverb');
-    if (reverbFx) {
-      body.appendChild(this._createDivider('Reverb'));
-
-      body.appendChild(this._createRangeRow('Rev Mix', 0, 1, 0.01, reverbFx.wet, (val) => {
-        this.toneOutput.setEffectParam('Reverb', 'wet', val);
-      }));
-      body.appendChild(this._createRangeRow('Rev Decay', 0.1, 10, 0.1, reverbFx.options.decay ?? 2.5, (val) => {
-        this.toneOutput.setEffectParam('Reverb', 'decay', val);
-      }));
-      body.appendChild(this._createRangeRow('Rev Pre-Delay', 0, 0.1, 0.001, reverbFx.options.preDelay ?? 0.01, (val) => {
-        this.toneOutput.setEffectParam('Reverb', 'preDelay', val);
-      }));
-    }
-
-    // Delay
-    const delayFx = toneConfig.effects.find(f => f.type === 'FeedbackDelay' || f.type === 'PingPongDelay');
-    if (delayFx) {
-      body.appendChild(this._createDivider('Delay'));
-
-      body.appendChild(this._createSelectRow('Dly Type', ['FeedbackDelay', 'PingPongDelay'], delayFx.type, (val) => {
-        this.toneOutput.swapDelayType(val);
-      }));
-
-      // Use generic type for param calls — works for both FeedbackDelay and PingPongDelay
-      const dlyType = delayFx.type;
-
-      body.appendChild(this._createRangeRow('Dly Mix', 0, 1, 0.01, delayFx.wet, (val) => {
-        this.toneOutput.setEffectParam(dlyType, 'wet', val);
-      }));
-      body.appendChild(this._createRangeRow('Dly Feedback', 0, 0.9, 0.01, delayFx.options.feedback ?? 0.3, (val) => {
-        this.toneOutput.setEffectParam(dlyType, 'feedback', val);
-      }));
-
-      // Delay time — note division select + free time slider
-      const noteValues = ['32n', '16n', '8n', '4n', '2n', '1n'];
-      const currentTime = delayFx.options.delayTime || '8n';
-      const isNoteValue = noteValues.includes(currentTime);
-
-      body.appendChild(this._createSelectRow('Dly Sync', ['free', ...noteValues], isNoteValue ? currentTime : 'free', (val) => {
-        if (val === 'free') {
-          this.toneOutput.setEffectParam(dlyType, 'delayTime', parseFloat(freeTimeSlider.value));
-          freeTimeRow.style.display = 'flex';
-        } else {
-          this.toneOutput.setEffectParam(dlyType, 'delayTime', val);
-          freeTimeRow.style.display = 'none';
-        }
-      }));
-
-      // Free time slider (visible when sync = 'free')
-      const freeTimeRow = this._createRangeRow('Dly Time (s)', 0.01, 2.0, 0.01,
-        typeof currentTime === 'number' ? currentTime : 0.25,
-        (val) => {
-          this.toneOutput.setEffectParam(dlyType, 'delayTime', val);
-        }
-      );
-      const freeTimeSlider = freeTimeRow.querySelector('input[type="range"]');
-      freeTimeRow.style.display = isNoteValue ? 'none' : 'flex';
-      body.appendChild(freeTimeRow);
-    }
-
-    // EQ3
-    const eq3Fx = toneConfig.effects.find(f => f.type === 'EQ3');
-    if (eq3Fx) {
-      body.appendChild(this._createDivider('EQ'));
-
-      body.appendChild(this._createRangeRow('Low', -12, 12, 0.5, eq3Fx.options.low ?? 0, (val) => {
-        this.toneOutput.setEffectParam('EQ3', 'low', val);
-      }));
-      body.appendChild(this._createRangeRow('Mid', -12, 12, 0.5, eq3Fx.options.mid ?? 0, (val) => {
-        this.toneOutput.setEffectParam('EQ3', 'mid', val);
-      }));
-      body.appendChild(this._createRangeRow('High', -12, 12, 0.5, eq3Fx.options.high ?? 0, (val) => {
-        this.toneOutput.setEffectParam('EQ3', 'high', val);
-      }));
-      body.appendChild(this._createRangeRow('Low Freq', 100, 1000, 10, eq3Fx.options.lowFrequency ?? 400, (val) => {
-        this.toneOutput.setEffectParam('EQ3', 'lowFrequency', val);
-      }));
-      body.appendChild(this._createRangeRow('High Freq', 1000, 8000, 50, eq3Fx.options.highFrequency ?? 2500, (val) => {
-        this.toneOutput.setEffectParam('EQ3', 'highFrequency', val);
-      }));
-    }
-
-    section.appendChild(body);
-    this.el = section;
-    return section;
-  }
-
-  _updateEnvelope(key, value) {
-    const config = this.toneOutput.getConfig();
-    const synthOptions = { ...config.synthOptions };
-    synthOptions.envelope = { ...synthOptions.envelope, [key]: value };
-    this.toneOutput.setConfig({ synthOptions });
-  }
-
-  _createSelectRow(labelText, options, currentValue, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-
-    const select = document.createElement('select');
-    for (const opt of options) {
-      const option = document.createElement('option');
-      option.value = opt;
-      option.textContent = opt;
-      if (opt === currentValue) option.selected = true;
-      select.appendChild(option);
-    }
-
-    select.addEventListener('change', () => onChange(select.value));
-    row.appendChild(select);
-    return row;
-  }
-
-  _createRangeRow(labelText, min, max, step, currentValue, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = min;
-    input.max = max;
-    input.step = step;
-    input.value = currentValue;
-
-    const valueDisplay = document.createElement('span');
-    valueDisplay.className = 'control-value';
-    valueDisplay.textContent = Number.isInteger(currentValue) ? currentValue : currentValue.toFixed(3);
-
-    input.addEventListener('input', () => {
-      const val = parseFloat(input.value);
-      valueDisplay.textContent = val.toFixed(3);
-      onChange(val);
+    const env = cfg.synthOptions?.envelope || {};
+    body.appendChild(divider('Envelope'));
+    const envRow = (label, key, min, max, step, fallback, format = sec) => rangeRow({
+      label, min, max, step, value: env[key] ?? fallback, format,
+      onInput: (val) => out.setConfig({ synthOptions: { envelope: { [key]: val } } }),
     });
+    body.appendChild(envRow('Attack', 'attack', 0.001, 1, 0.001, 0.005));
+    body.appendChild(envRow('Decay', 'decay', 0.01, 2, 0.01, 0.3));
+    body.appendChild(envRow('Sustain', 'sustain', 0, 1, 0.01, 0.1, pct));
+    body.appendChild(envRow('Release', 'release', 0.01, 4, 0.01, 0.8));
 
-    row.appendChild(input);
-    row.appendChild(valueDisplay);
-    return row;
-  }
+    const fx = (type) => cfg.effects.find(f => f.type === type);
+    const set = (type, key) => (val) => out.setEffectParam(type, key, val);
 
-  _createDivider(text) {
-    const div = document.createElement('div');
-    div.className = 'divider';
-    if (text) {
-      div.style.marginTop = '12px';
-      const label = document.createElement('div');
-      label.style.cssText = 'font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: #666688; margin-bottom: 6px;';
-      label.textContent = text;
-      const wrapper = document.createElement('div');
-      wrapper.appendChild(label);
-      wrapper.appendChild(div);
-      return wrapper;
+    const filter = fx('Filter');
+    if (filter) {
+      body.appendChild(divider('Filter'));
+      body.appendChild(rangeRow({
+        label: 'Cutoff', min: 20, max: 20000, step: 1, scale: 'log', format: hz,
+        value: filter.options.frequency ?? 2000, onInput: set('Filter', 'frequency'),
+      }));
+      body.appendChild(selectRow({
+        label: 'Type', options: ['lowpass', 'highpass', 'bandpass', 'notch'],
+        labels: { lowpass: 'Low-pass', highpass: 'High-pass', bandpass: 'Band-pass', notch: 'Notch' },
+        value: filter.options.type || 'lowpass', onChange: set('Filter', 'type'),
+      }));
+      body.appendChild(rangeRow({
+        label: 'Resonance', min: 0.1, max: 12, step: 0.1, format: (v) => `${v.toFixed(1)} dB`,
+        help: 'Peak at the cutoff. Capped so steep slopes can\'t produce a blast of volume.',
+        value: Math.min(filter.options.Q ?? 1, 12), onInput: set('Filter', 'Q'),
+      }));
+      body.appendChild(selectRow({
+        label: 'Slope', options: ['-12', '-24', '-48', '-96'],
+        labels: { '-12': '12 dB/oct', '-24': '24 dB/oct', '-48': '48 dB/oct', '-96': '96 dB/oct' },
+        value: String(filter.options.rolloff || -12), onChange: (val) => out.setEffectParam('Filter', 'rolloff', parseInt(val, 10)),
+      }));
     }
-    return div;
+
+    const chorus = fx('Chorus');
+    if (chorus) {
+      body.appendChild(divider('Chorus'));
+      body.appendChild(rangeRow({ label: 'Mix', min: 0, max: 1, step: 0.01, format: pct, value: chorus.wet ?? 0.3, onInput: set('Chorus', 'wet') }));
+      body.appendChild(rangeRow({ label: 'Rate', min: 0.1, max: 10, step: 0.1, unit: 'Hz', value: chorus.options.frequency ?? 1.5, onInput: set('Chorus', 'frequency') }));
+      body.appendChild(rangeRow({ label: 'Delay', min: 0.5, max: 20, step: 0.5, unit: 'ms', value: chorus.options.delayTime ?? 3.5, onInput: set('Chorus', 'delayTime') }));
+      body.appendChild(rangeRow({ label: 'Depth', min: 0, max: 1, step: 0.05, format: pct, value: chorus.options.depth ?? 0.7, onInput: set('Chorus', 'depth') }));
+    }
+
+    const reverb = fx('Reverb');
+    if (reverb) {
+      body.appendChild(divider('Reverb'));
+      body.appendChild(rangeRow({ label: 'Mix', min: 0, max: 1, step: 0.01, format: pct, value: reverb.wet ?? 0.4, onInput: set('Reverb', 'wet') }));
+      body.appendChild(rangeRow({ label: 'Decay', min: 0.1, max: 10, step: 0.1, format: sec, value: reverb.options.decay ?? 2.5, onInput: set('Reverb', 'decay') }));
+      body.appendChild(rangeRow({ label: 'Pre-Delay', min: 0, max: 0.1, step: 0.001, format: sec, value: reverb.options.preDelay ?? 0.01, onInput: set('Reverb', 'preDelay') }));
+    }
+
+    const delay = cfg.effects.find(f => f.type === 'FeedbackDelay' || f.type === 'PingPongDelay');
+    if (delay) {
+      body.appendChild(divider('Delay'));
+      const dlyType = delay.type;
+      body.appendChild(selectRow({
+        label: 'Type', options: ['FeedbackDelay', 'PingPongDelay'],
+        labels: { FeedbackDelay: 'Straight', PingPongDelay: 'Ping-pong' },
+        value: dlyType, onChange: (val) => out.swapDelayType(val),
+      }));
+      body.appendChild(rangeRow({ label: 'Mix', min: 0, max: 1, step: 0.01, format: pct, value: delay.wet ?? 0.2, onInput: set(dlyType, 'wet') }));
+      body.appendChild(rangeRow({ label: 'Feedback', min: 0, max: 0.9, step: 0.01, format: pct, value: delay.options.feedback ?? 0.3, onInput: set(dlyType, 'feedback') }));
+
+      const currentTime = delay.options.delayTime ?? '8n';
+      const synced = NOTE_DURATIONS.includes(currentTime);
+      const freeRow = rangeRow({
+        label: 'Time', min: 0.01, max: 2, step: 0.01, format: sec,
+        value: typeof currentTime === 'number' ? currentTime : 0.25,
+        onInput: set(dlyType, 'delayTime'),
+      });
+      freeRow.hidden = synced;
+      body.appendChild(selectRow({
+        label: 'Sync', options: ['free', ...NOTE_DURATIONS],
+        labels: { free: 'Free time', ...DURATION_LABELS },
+        value: synced ? currentTime : 'free',
+        onChange: (val) => {
+          freeRow.hidden = val !== 'free';
+          out.setEffectParam(dlyType, 'delayTime', val === 'free' ? parseFloat(freeRow.input.value) : val);
+        },
+      }));
+      body.appendChild(freeRow);
+    }
+
+    const eq = fx('EQ3');
+    if (eq) {
+      body.appendChild(divider('EQ'));
+      body.appendChild(rangeRow({ label: 'Low', min: -12, max: 12, step: 0.5, format: db, value: eq.options.low ?? 0, onInput: set('EQ3', 'low') }));
+      body.appendChild(rangeRow({ label: 'Mid', min: -12, max: 12, step: 0.5, format: db, value: eq.options.mid ?? 0, onInput: set('EQ3', 'mid') }));
+      body.appendChild(rangeRow({ label: 'High', min: -12, max: 12, step: 0.5, format: db, value: eq.options.high ?? 0, onInput: set('EQ3', 'high') }));
+      body.appendChild(rangeRow({ label: 'Low/Mid', min: 60, max: 1000, step: 1, scale: 'log', format: hz, value: eq.options.lowFrequency ?? 400, onInput: set('EQ3', 'lowFrequency') }));
+      body.appendChild(rangeRow({ label: 'Mid/High', min: 1000, max: 12000, step: 10, scale: 'log', format: hz, value: eq.options.highFrequency ?? 2500, onInput: set('EQ3', 'highFrequency') }));
+    }
+
+    this.el = el;
+    return el;
   }
 }

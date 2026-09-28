@@ -127,7 +127,10 @@ export class SceneManager {
     this.composer.addPass(this.bloomPass);
 
     // Motion trails
-    this.afterimagePass = new AfterimagePass(0.25);
+    // The per-frame damping is derived from this each frame (see render), so
+    // trails last the same time at any refresh rate
+    this._trailsAmount = 0.25;
+    this.afterimagePass = new AfterimagePass(this._trailsAmount);
     this.composer.addPass(this.afterimagePass);
 
     // God rays — radial blur from nebula center
@@ -532,7 +535,47 @@ export class SceneManager {
    * attack) while the target itself slowly decays (smooth, longer release).
    */
   triggerLightRayPulse(intensity = 0.3) {
-    this._godRayTarget = Math.max(this._godRayTarget, intensity);
+    this._godRayTarget = Math.max(this._godRayTarget, this._calm ? intensity * 0.2 : intensity);
+  }
+
+  // ── Post FX settings ───────────────────────────────────────────
+
+  getPostFX() {
+    return {
+      bloomStrength: this.bloomPass.strength,
+      bloomRadius: this.bloomPass.radius,
+      bloomThreshold: this.bloomPass.threshold,
+      trails: this._trailsAmount,
+      vignetteDarkness: this.vignettePass.uniforms.darkness.value,
+      vignetteOffset: this.vignettePass.uniforms.offset.value,
+      chromaticIntensity: this._rgbShiftMaxIntensity,
+    };
+  }
+
+  /** Apply Post FX settings; keys that are missing are left as they are. */
+  setPostFX(fx) {
+    if ('bloomStrength' in fx) this.bloomPass.strength = fx.bloomStrength;
+    if ('bloomRadius' in fx) this.bloomPass.radius = fx.bloomRadius;
+    if ('bloomThreshold' in fx) this.bloomPass.threshold = fx.bloomThreshold;
+    if ('trails' in fx) this._trailsAmount = fx.trails;
+    if ('vignetteDarkness' in fx) this.vignettePass.uniforms.darkness.value = fx.vignetteDarkness;
+    if ('vignetteOffset' in fx) this.vignettePass.uniforms.offset.value = fx.vignetteOffset;
+    if ('chromaticIntensity' in fx) this._rgbShiftMaxIntensity = fx.chromaticIntensity;
+  }
+
+  /**
+   * Calm visuals (also on by default when the system asks for reduced
+   * motion): no chromatic aberration, softer light pulses, no shooting stars.
+   */
+  setCalm(calm) {
+    this._calm = !!calm;
+    if (this._calm) this._rgbShiftIntensity = 0;
+  }
+
+  /** End any cinematic orbit or Home animation, e.g. before a preset sets the camera. */
+  stopCameraMotion() {
+    this._orbitMode = false;
+    this._cameraAnim = null;
   }
 
   /** Smoothly animate camera back to default view */
@@ -621,6 +664,7 @@ export class SceneManager {
 
   /** Trigger chromatic aberration flash on collision */
   triggerChromaticAberration(intensity = 0.5) {
+    if (this._calm) return;
     this._rgbShiftIntensity = Math.max(this._rgbShiftIntensity, intensity * this._rgbShiftMaxIntensity);
   }
 
@@ -655,7 +699,7 @@ export class SceneManager {
     }
 
     // Very rare chance to spawn a shooting star on trigger
-    if (Math.random() < this._shootingStarChance) {
+    if (!this._calm && Math.random() < this._shootingStarChance) {
       this.spawnShootingStar();
     }
   }
@@ -810,6 +854,7 @@ export class SceneManager {
     // The per-frame decay constants below were tuned at 60 fps; raising them
     // to this power keeps their timing the same at any refresh rate.
     const frames = dt * 60;
+    this.afterimagePass.uniforms.damp.value = Math.pow(this._trailsAmount, frames);
 
     // Smooth camera animation (transition to home or orbit start)
     if (this._cameraAnim) {

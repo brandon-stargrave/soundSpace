@@ -1,9 +1,33 @@
 import { PROGRESSION_IDS } from '../core/ProgressionWalker.js';
-import { CHORD_VOICINGS } from '../core/HarmonicOrbit.js';
+import { CHORD_VOICINGS, SYNTH_TYPES } from '../util/constants.js';
+import { section, divider, rangeRow, selectRow, toggleRow, note } from './controls.js';
+
+const PROGRESSION_LABELS = {
+  pedal: 'Pedal (home key, brief IV/V/♭VII)',
+  romanPopAxis: 'I–V–vi–IV (pop)',
+  romanCanonical: 'I–IV–V–I',
+  romanJazzii_v_I: 'ii–V–I (jazz)',
+  randomWalk: 'Random walk',
+  fifthsUp: 'Circle of fifths (changes key)',
+  fifthsRandom: 'Fifths up or down (changes key)',
+};
+
+const VOICING_LABELS = {
+  triad: 'Triad',
+  sus2: 'Sus2',
+  sus4: 'Sus4',
+  seventh: 'Seventh',
+  octaveDoubled: 'Open (octave doubled)',
+};
+
+const pct = (v) => `${Math.round(v * 100)}%`;
+const hz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} kHz` : `${Math.round(v)} Hz`);
+const sec = (v) => (v < 1 ? `${Math.round(v * 1000)} ms` : `${v.toFixed(2)} s`);
 
 /**
- * Global UI panel for the Harmonic Orbit — polygon + root progression +
- * pad/bass drones with their own synth config + external output routing.
+ * Global UI panel for the Harmonic Orbit — polygon traveler, chord
+ * progression, pad/bass drones with their own synth settings, and MIDI/OSC
+ * routing for the drones.
  */
 export class HarmonicOrbitPanel {
   constructor(engine) {
@@ -12,378 +36,241 @@ export class HarmonicOrbitPanel {
   }
 
   render() {
-    const section = document.createElement('details');
-    section.className = 'config-section';
-    section.open = false;
-
-    const summary = document.createElement('summary');
-    summary.textContent = 'Harmonic Orbit';
-    section.appendChild(summary);
-
-    const body = document.createElement('div');
-    body.className = 'section-body';
-
+    const { el, body } = section('Harmonic Orbit');
     const h = this.engine.harmonicOrbit;
     const p = h.params;
+    const set = (key) => (val) => h.setParam(key, val);
 
-    // Enabled
-    body.appendChild(this._createToggleRow('Enabled', p.enabled, (val) => {
-      h.setParam('enabled', val);
-    }));
+    body.appendChild(note('A traveler circles a polygon and, at each corner, moves the harmony to the next chord. Pad and bass drones follow it.'));
+    body.appendChild(toggleRow({ label: 'Enabled', value: p.enabled, onChange: (val) => { h.setParam('enabled', val); this._showNow(); } }));
+
+    this._now = note('', { live: true });
+    this._now.classList.add('harmonic-now');
+    body.appendChild(this._now);
+    h.onHarmonyChange = () => this._showNow();
+    this._showNow();
 
     // Shape
-    body.appendChild(this._createRangeRow('Sides', 3, 12, 1, p.sides, (val) => {
-      h.setParam('sides', val);
+    body.appendChild(divider('Shape'));
+    body.appendChild(rangeRow({ label: 'Sides', min: 3, max: 12, step: 1, value: p.sides, onInput: set('sides'), help: 'Corners per cycle: how many chord changes the traveler makes each lap.' }));
+    const radiusRow = rangeRow({ label: 'Radius', min: 0.3, max: 6, step: 0.05, value: p.radius ?? 3, onInput: set('radius') });
+    radiusRow.hidden = p.radius === null || p.radius === undefined;
+    body.appendChild(toggleRow({
+      label: 'Match Orbit 1 Radius',
+      value: radiusRow.hidden,
+      onChange: (val) => {
+        if (val) {
+          h.setParam('radius', null);
+        } else {
+          const current = this.engine.generators[0]?.params?.radius ?? 3;
+          h.setParam('radius', current);
+          radiusRow.setValue(current);
+        }
+        radiusRow.hidden = val;
+      },
     }));
-
-    // Radius — with "match orbit 1" toggle
-    const radiusIsAuto = p.radius === null || p.radius === undefined;
-    const autoRadiusRow = this._createToggleRow('Match Orbit 1 Radius', radiusIsAuto, (val) => {
-      if (val) {
-        h.setParam('radius', null);
-        this._syncRadiusRowVisibility(true);
-      } else {
-        const current = (this.engine.generators[0]?.params?.radius) ?? 3.0;
-        h.setParam('radius', current);
-        this._radiusRow.querySelector('input[type=range]').value = current;
-        this._radiusRow.querySelector('.control-value').textContent = current.toFixed(2);
-        this._syncRadiusRowVisibility(false);
-      }
-    });
-    body.appendChild(autoRadiusRow);
-    this._radiusRow = this._createRangeRow('Radius', 0.3, 6.0, 0.05, p.radius ?? 3.0, (val) => {
-      h.setParam('radius', val);
-    });
-    body.appendChild(this._radiusRow);
-    this._syncRadiusRowVisibility(radiusIsAuto);
-
-    body.appendChild(this._createRangeRow('Traveler Size', 0.04, 0.4, 0.01, p.travelerSize, (val) => {
-      h.setParam('travelerSize', val);
-    }));
+    body.appendChild(radiusRow);
+    body.appendChild(rangeRow({ label: 'Traveler Size', min: 0.04, max: 0.4, step: 0.01, value: p.travelerSize, onInput: set('travelerSize') }));
 
     // Motion
-    body.appendChild(this._createDivider('Motion'));
-    body.appendChild(this._createSelectRow('Speed Mode', ['free', 'periodSync'], p.speedMode, (val) => {
-      h.setParam('speedMode', val);
-      this._refreshMotionVisibility(val);
+    body.appendChild(divider('Motion'));
+    this._bpmRow = rangeRow({
+      label: 'Speed', min: 2, max: 240, step: 1, value: p.speedBpm, unit: 'corners/min', onInput: set('speedBpm'),
+      help: 'How many corners the traveler reaches per minute.',
+    });
+    this._syncSourceRow = selectRow({
+      label: 'Follow Orbit', options: [], value: '',
+      help: 'The traveler completes a lap each time this orbit\'s first node does (times the ratio below).',
+      onChange: (val) => h.setParam('syncSourceIndex', parseInt(val, 10)),
+    });
+    this._syncRatioRow = rangeRow({ label: 'Laps per Cycle', min: 0.125, max: 32, step: 0.125, value: p.syncRatio, onInput: set('syncRatio') });
+    body.appendChild(selectRow({
+      label: 'Timing', options: ['free', 'periodSync'],
+      labels: { free: 'Own speed', periodSync: 'Follow an orbit' },
+      value: p.speedMode,
+      onChange: (val) => { h.setParam('speedMode', val); this._refreshMotionVisibility(val); },
     }));
-    // BPM — min 2 for ambient, max 240. Step 1.
-    this._bpmRow = this._createRangeRow('Speed (BPM)', 2, 240, 1, p.speedBpm, (val) => {
-      h.setParam('speedBpm', val);
-    });
     body.appendChild(this._bpmRow);
-
-    this._syncSourceRow = this._createSelectRow(
-      'Sync Source Orbit',
-      [],
-      null,
-      (val) => h.setParam('syncSourceIndex', parseInt(val, 10))
-    );
-    this.refreshSyncSources();
     body.appendChild(this._syncSourceRow);
-    // Sync ratio — extended range 0.125 .. 32 (5 octaves of slowing factor)
-    this._syncRatioRow = this._createRangeRow('Sync Ratio', 0.125, 32, 0.125, p.syncRatio, (val) => {
-      h.setParam('syncRatio', val);
-    });
     body.appendChild(this._syncRatioRow);
+    this.refreshSyncSources();
     this._refreshMotionVisibility(p.speedMode);
 
     // Progression
-    body.appendChild(this._createDivider('Progression'));
-    body.appendChild(this._createSelectRow('Algorithm', PROGRESSION_IDS, p.progressionId, (val) => {
-      h.setParam('progressionId', val);
+    body.appendChild(divider('Progression'));
+    body.appendChild(selectRow({
+      label: 'Chords', options: PROGRESSION_IDS, labels: PROGRESSION_LABELS, value: p.progressionId,
+      onChange: set('progressionId'),
     }));
-    body.appendChild(this._createRangeRow('Transpose Chance', 0.05, 1.0, 0.05, p.transposeChance, (val) => {
-      h.setParam('transposeChance', val);
+    body.appendChild(rangeRow({
+      label: 'Change Chance', min: 0.05, max: 1, step: 0.05, format: pct, value: p.transposeChance,
+      onInput: set('transposeChance'), help: 'Chance that each corner moves to the next chord.',
     }));
 
     // Pad voice
-    body.appendChild(this._createDivider('Pad Voice'));
-    body.appendChild(this._createToggleRow('Pad Enabled', p.padEnabled, (val) => {
-      h.setParam('padEnabled', val);
-    }));
-    body.appendChild(this._createRangeRow('Pad Volume', 0, 1, 0.01, p.padVolume, (val) => {
-      h.setParam('padVolume', val);
-    }));
-    body.appendChild(this._createSelectRow('Chord Voicing', CHORD_VOICINGS, p.chordVoicing, (val) => {
-      h.setParam('chordVoicing', val);
-    }));
-    body.appendChild(this._createRangeRow('Pad Octave', 1, 6, 1, p.padOctave, (val) => {
-      h.setParam('padOctave', val);
-    }));
-
-    // Pad synth details (collapsible)
+    body.appendChild(divider('Pad'));
+    body.appendChild(toggleRow({ label: 'Pad', value: p.padEnabled, onChange: set('padEnabled') }));
+    body.appendChild(rangeRow({ label: 'Pad Level', min: 0, max: 1, step: 0.01, format: pct, value: p.padVolume, onInput: set('padVolume') }));
+    body.appendChild(selectRow({ label: 'Voicing', options: CHORD_VOICINGS, labels: VOICING_LABELS, value: p.chordVoicing, onChange: set('chordVoicing') }));
+    body.appendChild(rangeRow({ label: 'Pad Octave', min: 1, max: 6, step: 1, value: p.padOctave, onInput: set('padOctave') }));
     body.appendChild(this._buildVoiceSynthSection('Pad Synth', 'pad'));
 
     // Bass voice
-    body.appendChild(this._createDivider('Bass Voice'));
-    body.appendChild(this._createToggleRow('Bass Enabled', p.bassEnabled, (val) => {
-      h.setParam('bassEnabled', val);
-    }));
-    body.appendChild(this._createRangeRow('Bass Volume', 0, 1, 0.01, p.bassVolume, (val) => {
-      h.setParam('bassVolume', val);
-    }));
-    body.appendChild(this._createRangeRow('Bass Octave', 0, 4, 1, p.bassOctave, (val) => {
-      h.setParam('bassOctave', val);
-    }));
+    body.appendChild(divider('Bass'));
+    body.appendChild(toggleRow({ label: 'Bass', value: p.bassEnabled, onChange: set('bassEnabled') }));
+    body.appendChild(rangeRow({ label: 'Bass Level', min: 0, max: 1, step: 0.01, format: pct, value: p.bassVolume, onInput: set('bassVolume') }));
+    body.appendChild(rangeRow({ label: 'Bass Octave', min: 1, max: 4, step: 1, value: Math.max(1, p.bassOctave), onInput: set('bassOctave') }));
     body.appendChild(this._buildVoiceSynthSection('Bass Synth', 'bass'));
 
     // External output
-    body.appendChild(this._createDivider('External Output'));
-    body.appendChild(this._createToggleRow('Send MIDI', p.midiEnabled, (val) => {
-      h.setParam('midiEnabled', val);
-    }));
-    body.appendChild(this._createRangeRow('MIDI Pad Channel', 1, 16, 1, p.midiPadChannel, (val) => {
-      h.setParam('midiPadChannel', val);
-    }));
-    body.appendChild(this._createRangeRow('MIDI Bass Channel', 1, 16, 1, p.midiBassChannel, (val) => {
-      h.setParam('midiBassChannel', val);
-    }));
-    body.appendChild(this._createToggleRow('Send OSC', p.oscEnabled, (val) => {
-      h.setParam('oscEnabled', val);
-    }));
-    const oscInfo = document.createElement('div');
-    oscInfo.style.cssText = 'font-size: 9px; color: #556; margin-top: 4px;';
-    oscInfo.textContent = 'OSC: /soundspace/harmonic/{pad|bass|transpose}';
-    body.appendChild(oscInfo);
+    body.appendChild(divider('MIDI / OSC'));
+    body.appendChild(toggleRow({ label: 'Send MIDI', value: p.midiEnabled, onChange: set('midiEnabled'), help: 'Also needs MIDI turned on in the MIDI / OSC section.' }));
+    body.appendChild(rangeRow({ label: 'Pad Channel', min: 1, max: 16, step: 1, value: p.midiPadChannel, onInput: set('midiPadChannel') }));
+    body.appendChild(rangeRow({ label: 'Bass Channel', min: 1, max: 16, step: 1, value: p.midiBassChannel, onInput: set('midiBassChannel') }));
+    body.appendChild(toggleRow({ label: 'Send OSC', value: p.oscEnabled, onChange: set('oscEnabled') }));
 
-    section.appendChild(body);
-    this.el = section;
-    return section;
+    this.el = el;
+    return el;
+  }
+
+  /** Show the current key and pad chord. */
+  _showNow() {
+    if (!this._now) return;
+    const h = this.engine.harmonicOrbit;
+    if (!h.params.enabled) {
+      this._now.textContent = 'Off.';
+      return;
+    }
+    const chord = h.currentChordNames();
+    this._now.textContent = chord.length ? `Now: ${chord.join(' ')} (key of ${h.homeKeyName()})` : 'Starting…';
   }
 
   /** Pad or bass collapsible synth config panel. */
   _buildVoiceSynthSection(titleText, voiceKey) {
     const wrapper = document.createElement('details');
     wrapper.className = 'config-subsection';
-    wrapper.style.cssText = 'margin-top: 6px; border-left: 2px solid rgba(0,255,255,0.15); padding-left: 8px;';
-
     const sum = document.createElement('summary');
     sum.textContent = titleText;
-    sum.style.cssText = 'cursor: pointer; font-size: 11px; color: #aacce0; padding: 4px 0;';
     wrapper.appendChild(sum);
 
     const h = this.engine.harmonicOrbit;
     const cfg = voiceKey === 'pad' ? h.getPadConfig() : h.getBassConfig();
     if (!cfg) {
-      const msg = document.createElement('div');
-      msg.style.cssText = 'font-size: 10px; color: #668; padding: 6px 0;';
-      msg.textContent = '(voice not initialized — start audio first)';
-      wrapper.appendChild(msg);
+      wrapper.appendChild(note('Starts with the audio. Click anywhere if the sound hasn\'t started.'));
       return wrapper;
     }
+    const voice = () => (voiceKey === 'pad' ? h._pad : h._bass);
 
-    // Synth type
-    wrapper.appendChild(this._createSelectRow(
-      'Synth Type',
-      ['Synth', 'FMSynth', 'AMSynth', 'MonoSynth'],
-      cfg.synthType,
-      (val) => {
-        if (voiceKey === 'pad') h.setPadConfig({ synthType: val });
-        else h.setBassConfig({ synthType: val });
-      }
-    ));
+    wrapper.appendChild(selectRow({
+      label: 'Voice', options: SYNTH_TYPES.filter(t => ['Synth', 'FMSynth', 'AMSynth', 'MonoSynth'].includes(t)),
+      labels: { Synth: 'Basic', FMSynth: 'FM', AMSynth: 'AM', MonoSynth: 'Mono (filtered)' },
+      value: cfg.synthType,
+      onChange: (val) => (voiceKey === 'pad' ? h.setPadConfig({ synthType: val }) : h.setBassConfig({ synthType: val })),
+    }));
 
-    // Oscillator type
     const osc = cfg.synthOptions?.oscillator;
     if (osc) {
-      wrapper.appendChild(this._createSelectRow(
-        'Oscillator',
-        ['sine', 'triangle', 'sawtooth', 'square'],
-        osc.type || 'sine',
-        (val) => {
-          if (voiceKey === 'pad') h._pad?.setSynthParam('oscillator.type', val);
-          else h._bass?.setSynthParam('oscillator.type', val);
-        }
-      ));
+      wrapper.appendChild(selectRow({
+        label: 'Wave', options: ['sine', 'triangle', 'sawtooth', 'square'],
+        labels: { sine: 'Sine', triangle: 'Triangle', sawtooth: 'Saw', square: 'Square' },
+        value: osc.type || 'sine',
+        onChange: (val) => voice()?.setSynthParam('oscillator.type', val),
+      }));
     }
 
-    // Envelope ADSR
     const env = cfg.synthOptions?.envelope;
     if (env) {
-      const envDiv = document.createElement('div');
-      envDiv.style.marginTop = '4px';
-      const envLabel = document.createElement('div');
-      envLabel.style.cssText = 'font-size: 9px; color: #667; letter-spacing: 0.5px; margin-bottom: 3px;';
-      envLabel.textContent = 'ENVELOPE (ADSR)';
-      envDiv.appendChild(envLabel);
-      const voiceRef = voiceKey === 'pad' ? h._pad : h._bass;
-      envDiv.appendChild(this._createRangeRow('Attack', 0.001, 5, 0.01, env.attack ?? 0.1, (v) => voiceRef?.setSynthParam('envelope.attack', v)));
-      envDiv.appendChild(this._createRangeRow('Decay', 0.001, 5, 0.01, env.decay ?? 0.3, (v) => voiceRef?.setSynthParam('envelope.decay', v)));
-      envDiv.appendChild(this._createRangeRow('Sustain', 0, 1, 0.01, env.sustain ?? 0.5, (v) => voiceRef?.setSynthParam('envelope.sustain', v)));
-      envDiv.appendChild(this._createRangeRow('Release', 0.01, 10, 0.01, env.release ?? 1.0, (v) => voiceRef?.setSynthParam('envelope.release', v)));
-      wrapper.appendChild(envDiv);
+      wrapper.appendChild(divider('Envelope'));
+      const envRow = (label, key, min, max, fallback, format = sec) => rangeRow({
+        label, min, max, step: 0.01, value: env[key] ?? fallback, format,
+        onInput: (v) => voice()?.setSynthParam(`envelope.${key}`, v),
+      });
+      wrapper.appendChild(envRow('Attack', 'attack', 0.01, 5, 0.1));
+      wrapper.appendChild(envRow('Decay', 'decay', 0.01, 5, 0.3));
+      wrapper.appendChild(envRow('Sustain', 'sustain', 0, 1, 0.5, pct));
+      wrapper.appendChild(envRow('Release', 'release', 0.01, 10, 1.0));
     }
 
-    // Effects — Filter + Chorus + Reverb + EQ3
     for (const fx of cfg.effects || []) {
       wrapper.appendChild(this._buildEffectSection(voiceKey, fx));
     }
-
     return wrapper;
   }
 
   _buildEffectSection(voiceKey, fx) {
     const h = this.engine.harmonicOrbit;
-    const setter = voiceKey === 'pad'
-      ? (name, value) => h.setPadEffectParam(fx.type, name, value)
-      : (name, value) => h.setBassEffectParam(fx.type, name, value);
+    const setter = (name) => (value) => (voiceKey === 'pad'
+      ? h.setPadEffectParam(fx.type, name, value)
+      : h.setBassEffectParam(fx.type, name, value));
+    const opts = fx.options || {};
 
-    const wrap = document.createElement('details');
-    wrap.style.cssText = 'margin-top: 4px;';
-    const sum = document.createElement('summary');
-    sum.textContent = fx.type;
-    sum.style.cssText = 'font-size: 10px; color: #99aadd; cursor: pointer;';
-    wrap.appendChild(sum);
+    const titles = { Filter: 'Filter', Chorus: 'Chorus', Reverb: 'Reverb', EQ3: 'EQ', FeedbackDelay: 'Delay', PingPongDelay: 'Delay' };
+    const wrap = document.createElement('div');
+    wrap.appendChild(divider(titles[fx.type] || fx.type));
 
-    // Filter and EQ have no wet/dry mix, so a Wet slider would do nothing
+    // Filter and EQ have no wet/dry mix, so a Mix slider would do nothing
     if (fx.wet !== undefined && fx.type !== 'Filter' && fx.type !== 'EQ3') {
-      wrap.appendChild(this._createRangeRow('Wet', 0, 1, 0.01, fx.wet, (v) => setter('wet', v)));
+      wrap.appendChild(rangeRow({ label: 'Mix', min: 0, max: 1, step: 0.01, format: pct, value: fx.wet, onInput: setter('wet') }));
     }
 
-    const opts = fx.options || {};
     switch (fx.type) {
       case 'Filter':
-        wrap.appendChild(this._createRangeRow('Frequency', 40, 8000, 10, opts.frequency ?? 1000, (v) => setter('frequency', v)));
-        wrap.appendChild(this._createRangeRow('Q', 0.1, 20, 0.1, opts.Q ?? 1, (v) => setter('Q', v)));
-        wrap.appendChild(this._createSelectRow('Type', ['lowpass', 'highpass', 'bandpass', 'notch'], opts.type ?? 'lowpass', (v) => setter('type', v)));
+        wrap.appendChild(rangeRow({ label: 'Cutoff', min: 40, max: 8000, step: 1, scale: 'log', format: hz, value: opts.frequency ?? 1000, onInput: setter('frequency') }));
+        wrap.appendChild(rangeRow({ label: 'Resonance', min: 0.1, max: 12, step: 0.1, format: (v) => `${v.toFixed(1)} dB`, value: Math.min(opts.Q ?? 1, 12), onInput: setter('Q') }));
+        wrap.appendChild(selectRow({
+          label: 'Type', options: ['lowpass', 'highpass', 'bandpass', 'notch'],
+          labels: { lowpass: 'Low-pass', highpass: 'High-pass', bandpass: 'Band-pass', notch: 'Notch' },
+          value: opts.type ?? 'lowpass', onChange: setter('type'),
+        }));
         break;
       case 'Chorus':
-        wrap.appendChild(this._createRangeRow('Rate', 0.05, 10, 0.05, opts.frequency ?? 1, (v) => setter('frequency', v)));
-        wrap.appendChild(this._createRangeRow('Depth', 0, 1, 0.01, opts.depth ?? 0.5, (v) => setter('depth', v)));
+        wrap.appendChild(rangeRow({ label: 'Rate', min: 0.05, max: 10, step: 0.05, unit: 'Hz', value: opts.frequency ?? 1, onInput: setter('frequency') }));
+        wrap.appendChild(rangeRow({ label: 'Depth', min: 0, max: 1, step: 0.01, format: pct, value: opts.depth ?? 0.5, onInput: setter('depth') }));
         break;
       case 'Reverb':
-        wrap.appendChild(this._createRangeRow('Decay', 0.1, 10, 0.1, opts.decay ?? 2, (v) => setter('decay', v)));
-        wrap.appendChild(this._createRangeRow('PreDelay', 0, 0.2, 0.001, opts.preDelay ?? 0.01, (v) => setter('preDelay', v)));
+        wrap.appendChild(rangeRow({ label: 'Decay', min: 0.1, max: 10, step: 0.1, format: sec, value: opts.decay ?? 2, onInput: setter('decay') }));
+        wrap.appendChild(rangeRow({ label: 'Pre-Delay', min: 0, max: 0.2, step: 0.001, format: sec, value: opts.preDelay ?? 0.01, onInput: setter('preDelay') }));
         break;
       case 'FeedbackDelay':
       case 'PingPongDelay':
-        wrap.appendChild(this._createRangeRow('Feedback', 0, 0.95, 0.01, opts.feedback ?? 0.3, (v) => setter('feedback', v)));
+        wrap.appendChild(rangeRow({ label: 'Feedback', min: 0, max: 0.95, step: 0.01, format: pct, value: opts.feedback ?? 0.3, onInput: setter('feedback') }));
         break;
-      case 'EQ3':
-        wrap.appendChild(this._createRangeRow('Low', -24, 12, 0.5, opts.low ?? 0, (v) => setter('low', v)));
-        wrap.appendChild(this._createRangeRow('Mid', -24, 12, 0.5, opts.mid ?? 0, (v) => setter('mid', v)));
-        wrap.appendChild(this._createRangeRow('High', -24, 12, 0.5, opts.high ?? 0, (v) => setter('high', v)));
+      case 'EQ3': {
+        const db = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`;
+        wrap.appendChild(rangeRow({ label: 'Low', min: -24, max: 12, step: 0.5, format: db, value: opts.low ?? 0, onInput: setter('low') }));
+        wrap.appendChild(rangeRow({ label: 'Mid', min: -24, max: 12, step: 0.5, format: db, value: opts.mid ?? 0, onInput: setter('mid') }));
+        wrap.appendChild(rangeRow({ label: 'High', min: -24, max: 12, step: 0.5, format: db, value: opts.high ?? 0, onInput: setter('high') }));
         break;
+      }
     }
-
     return wrap;
   }
 
-  _syncRadiusRowVisibility(hidden) {
-    if (this._radiusRow) this._radiusRow.style.display = hidden ? 'none' : '';
-  }
-
   _refreshMotionVisibility(mode) {
-    const show = (row, visible) => {
-      if (row) row.style.display = visible ? '' : 'none';
-    };
-    show(this._bpmRow, mode === 'free');
-    show(this._syncSourceRow, mode === 'periodSync');
-    show(this._syncRatioRow, mode === 'periodSync');
+    this._bpmRow.hidden = mode !== 'free';
+    this._syncSourceRow.hidden = mode !== 'periodSync';
+    this._syncRatioRow.hidden = mode !== 'periodSync';
   }
 
   /**
-   * Re-list the orbits in the Sync Source dropdown. Call after orbits are
-   * added or removed; pass the removed index so the source keeps pointing at
-   * the same orbit when the ones before it shift down.
+   * List the orbits in the Follow Orbit dropdown, by orbit number. Call after
+   * orbits are added or removed; if the followed orbit is gone, follow the first.
    */
-  refreshSyncSources(removedIndex = null) {
-    const select = this._syncSourceRow?.querySelector('select');
+  refreshSyncSources() {
+    const select = this._syncSourceRow?.input;
     if (!select) return;
     const h = this.engine.harmonicOrbit;
-    const count = Math.max(this.engine.generators.length, 1);
-    let idx = h.params.syncSourceIndex;
-    if (removedIndex !== null && removedIndex < idx) idx--;
-    idx = Math.min(idx, count - 1);
-    if (idx !== h.params.syncSourceIndex) h.setParam('syncSourceIndex', idx);
+    const numbers = this.engine.generators.map(g => g.params.orbitIndex);
+    if (!numbers.length) return;
+    if (!numbers.includes(h.params.syncSourceIndex)) h.setParam('syncSourceIndex', numbers[0]);
 
     select.innerHTML = '';
-    for (let i = 0; i < count; i++) {
+    for (const n of numbers) {
       const option = document.createElement('option');
-      option.value = String(i);
-      option.textContent = String(i + 1); // matches the 1-based orbit bar
+      option.value = String(n);
+      option.textContent = `Orbit ${n + 1}`;
       select.appendChild(option);
     }
-    select.value = String(idx);
-  }
-
-  // ── Helpers ──
-
-  _createToggleRow(labelText, value, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-    const toggle = document.createElement('label');
-    toggle.className = 'toggle-switch';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = value;
-    const slider = document.createElement('span');
-    slider.className = 'toggle-slider';
-    input.addEventListener('change', () => onChange(input.checked));
-    toggle.appendChild(input);
-    toggle.appendChild(slider);
-    row.appendChild(toggle);
-    return row;
-  }
-
-  _createRangeRow(labelText, min, max, step, value, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = min;
-    input.max = max;
-    input.step = step;
-    input.value = value;
-    const display = document.createElement('span');
-    display.className = 'control-value';
-    display.textContent = Number.isInteger(value) ? value : Number(value).toFixed(2);
-    input.addEventListener('input', () => {
-      const val = parseFloat(input.value);
-      display.textContent = Number.isInteger(val) ? val : val.toFixed(2);
-      onChange(val);
-    });
-    row.appendChild(input);
-    row.appendChild(display);
-    return row;
-  }
-
-  _createSelectRow(labelText, options, value, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-    const select = document.createElement('select');
-    for (const opt of options) {
-      const option = document.createElement('option');
-      option.value = opt;
-      option.textContent = opt;
-      if (opt === value) option.selected = true;
-      select.appendChild(option);
-    }
-    select.addEventListener('change', () => onChange(select.value));
-    row.appendChild(select);
-    return row;
-  }
-
-  _createDivider(text) {
-    const wrapper = document.createElement('div');
-    wrapper.style.marginTop = '10px';
-    const label = document.createElement('div');
-    label.style.cssText = 'font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: #666688; margin-bottom: 6px;';
-    label.textContent = text;
-    const div = document.createElement('div');
-    div.className = 'divider';
-    wrapper.appendChild(label);
-    wrapper.appendChild(div);
-    return wrapper;
+    select.value = String(h.params.syncSourceIndex);
   }
 }

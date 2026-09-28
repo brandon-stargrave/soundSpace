@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import { Generator } from '../core/Generator.js';
 import { TriggerEvent } from '../core/TriggerEvent.js';
 import { normalizeAngle, polarToCartesian, clamp } from '../util/math.js';
-import { getAlgorithmIds, createAlgorithm } from './motion/MotionRegistry.js';
-import { getTriggerIds, createTrigger } from './triggers/TriggerRegistry.js';
-import { getMappingIds, createMapping } from './mapping/MappingRegistry.js';
+import { getAlgorithmNames, createAlgorithm } from './motion/MotionRegistry.js';
+import { getTriggerNames, createTrigger } from './triggers/TriggerRegistry.js';
+import { getMappingNames, createMapping } from './mapping/MappingRegistry.js';
+import { ORBIT_PARAMS, DEFAULT_SPEED_RATIOS } from './orbitParams.js';
 import {
   createGlowMaterial,
   createIridescentMaterial,
@@ -27,7 +28,7 @@ const DEFAULT_PARAMS = {
   nodeCount: 5,
   radius: 3.0,
   baseSpeed: 0.5,
-  speedRatios: [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5],
+  speedRatios: DEFAULT_SPEED_RATIOS,
   direction: 'mixed',       // 'cw' | 'ccw' | 'mixed' | 'alternate'
   trailLength: 5,           // Number of trail points
   trailStyle: 'line',      // 'line' | 'dots'
@@ -39,9 +40,6 @@ const DEFAULT_PARAMS = {
   showOrbitRing: true,
   showConnectionLines: true,
   noteMapping: 'angle',     // pluggable mapping ID
-  minCrossingAngle: 0.04,   // Radians — crossing detection threshold
-  cooldownMs: 80,           // Min time between triggers for the same pair
-  spinSpeed: 0.02,          // Global nebula/ring rotation speed (rad/s)
   motionAlgorithm: 'none',  // 'none' | 'phaseDrift' | 'harmonicRatios' | 'goldenSpiral'
   triggerMethod: 'nodeCollision', // 'nodeCollision' | 'staticPins' | 'zoneTriggers'
 };
@@ -49,7 +47,7 @@ const DEFAULT_PARAMS = {
 export class OrbitalNodes extends Generator {
   constructor(sceneManager, outputRouter, config = {}) {
     super('OrbitalNodes', sceneManager, outputRouter);
-    this.params = { ...DEFAULT_PARAMS, ...config };
+    this.params = { ...DEFAULT_PARAMS, ...config, speedRatios: [...(config.speedRatios || DEFAULT_SPEED_RATIOS)] };
     this.nodes = [];
     this.sparklePool = null;
     this._nebula = null;
@@ -73,6 +71,7 @@ export class OrbitalNodes extends Generator {
     this._buildNodes();
     this._buildOrbitRing();
     this._buildConnectionLines();
+    if (this.params.motionAlgorithm !== 'none') this._switchAlgorithm(this.params.motionAlgorithm);
   }
 
   update(deltaTime) {
@@ -292,31 +291,23 @@ export class OrbitalNodes extends Generator {
   // ── Parameter Descriptors ──────────────────────────────────────
 
   getParams() {
-    const params = [
-      { key: 'motionAlgorithm', label: 'Motion', type: 'select', value: this.params.motionAlgorithm, options: ['none', ...getAlgorithmIds()] },
-      { key: 'triggerMethod', label: 'Trigger', type: 'select', value: this.params.triggerMethod, options: getTriggerIds() },
-      { key: 'nodeCount', label: 'Nodes', type: 'range', min: 2, max: 16, step: 1, value: this.params.nodeCount },
-      { key: 'radius', label: 'Radius', type: 'range', min: 0.5, max: 6, step: 0.1, value: this.params.radius },
-      { key: 'baseSpeed', label: 'Node Speed', type: 'range', min: 0.05, max: 5, step: 0.05, value: this.params.baseSpeed },
-      { key: 'spinSpeed', label: 'Spin Speed', type: 'range', min: 0, max: 0.15, step: 0.005, value: this.params.spinSpeed },
-      { key: 'direction', label: 'Direction', type: 'select', value: this.params.direction, options: ['cw', 'ccw', 'mixed', 'alternate'] },
-      { key: 'trailLength', label: 'Trail Number', type: 'range', min: 0, max: 200, step: 1, value: this.params.trailLength },
-      { key: 'trailStyle', label: 'Trail Style', type: 'select', value: this.params.trailStyle, options: ['line', 'dots'] },
-      { key: 'tailLength', label: 'Tail Length', type: 'range', min: 0, max: 3, step: 0.05, value: this.params.tailLength },
-      { key: 'tailDecompose', label: 'Tail Decompose', type: 'range', min: 0, max: 1, step: 0.01, value: this.params.tailDecompose },
-      { key: 'tailDecomposeCount', label: 'Decompose Fragments', type: 'range', min: 2, max: 12, step: 1, value: this.params.tailDecomposeCount },
-      { key: 'nodeStyle', label: 'Node Style', type: 'select', value: this.params.nodeStyle, options: ['sphere', 'ring', 'diamond', 'orb'] },
-      { key: 'nodeSize', label: 'Node Size', type: 'range', min: 0.05, max: 0.5, step: 0.01, value: this.params.nodeSize },
-      { key: 'showOrbitRing', label: 'Orbit Ring', type: 'toggle', value: this.params.showOrbitRing },
-      { key: 'showConnectionLines', label: 'Connections', type: 'toggle', value: this.params.showConnectionLines },
-      { key: 'noteMapping', label: 'Note Mapping', type: 'select', value: this.params.noteMapping, options: getMappingIds() },
-    ];
+    const labelsOf = (list) => Object.fromEntries(list.map(({ id, name }) => [id, name]));
+    const motion = getAlgorithmNames();
+    const pluginOptions = {
+      motionAlgorithm: { options: ['none', ...motion.map(m => m.id)], optionLabels: { none: 'None', ...labelsOf(motion) } },
+      triggerMethod: { options: getTriggerNames().map(t => t.id), optionLabels: labelsOf(getTriggerNames()) },
+      noteMapping: { options: getMappingNames().map(m => m.id), optionLabels: labelsOf(getMappingNames()) },
+    };
+    const params = ORBIT_PARAMS.map(d => ({ ...d, ...pluginOptions[d.key], value: this.params[d.key] }));
+    // An active motion algorithm sets every node's speed itself
+    const speed = params.find(p => p.key === 'baseSpeed');
+    if (this.params.motionAlgorithm !== 'none') speed.disabled = true;
 
     // Append algorithm-specific params with 'algo.' prefix
     if (this._motionAlgo) {
       const algoParams = this._motionAlgo.getParams();
       for (const p of algoParams) {
-        params.push({ ...p, key: `algo.${p.key}` });
+        params.push({ ...p, key: `algo.${p.key}`, group: 'motion' });
       }
     }
 
@@ -324,7 +315,7 @@ export class OrbitalNodes extends Generator {
     if (this._triggerMethod) {
       const trigParams = this._triggerMethod.getParams();
       for (const p of trigParams) {
-        params.push({ ...p, key: `trig.${p.key}` });
+        params.push({ ...p, key: `trig.${p.key}`, group: 'trigger' });
       }
     }
 
@@ -332,7 +323,7 @@ export class OrbitalNodes extends Generator {
     if (this._noteMapping) {
       const mapParams = this._noteMapping.getParams();
       for (const p of mapParams) {
-        params.push({ ...p, key: `map.${p.key}` });
+        params.push({ ...p, key: `map.${p.key}`, group: 'notes' });
       }
     }
 
@@ -396,8 +387,6 @@ export class OrbitalNodes extends Generator {
       for (let i = 0; i < this.nodes.length; i++) {
         this.nodes[i].dir = this._resolveDirection(value, i);
       }
-    } else if (key === 'spinSpeed') {
-      if (this._nebula) this._nebula.spinSpeed = value;
     } else if (key === 'baseSpeed') {
       // Recalculate per-node speeds without rebuilding
       for (let i = 0; i < this.nodes.length; i++) {

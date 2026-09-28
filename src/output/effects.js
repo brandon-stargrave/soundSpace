@@ -1,5 +1,6 @@
 import * as Tone from 'tone';
 import { rampParam } from '../util/audio.js';
+export { SYNTH_TYPES } from '../util/constants.js';
 
 // Shared synth and effect plumbing for the orbit synths (ToneOutput) and the
 // Harmonic Orbit drones (AuxVoice), so both build and edit effects the same way.
@@ -13,8 +14,6 @@ const SYNTH_CLASSES = {
   MetalSynth: Tone.MetalSynth,
   PluckSynth: Tone.PluckSynth,
 };
-
-export const SYNTH_TYPES = Object.keys(SYNTH_CLASSES);
 
 export function synthClassFor(type) {
   return SYNTH_CLASSES[type] || Tone.Synth;
@@ -103,11 +102,12 @@ export function createEffect(fx, label = 'effect') {
       }
       case 'EQ3': effect = new ShelfEQ(options); break;
       case 'Reverb': effect = new Tone.Reverb(options); break;
-      case 'FeedbackDelay': effect = new Tone.FeedbackDelay(options.delayTime, options.feedback); break;
+      // The default one-second buffer can't hold a whole note at 120 BPM (2 s)
+      case 'FeedbackDelay': effect = new Tone.FeedbackDelay({ delayTime: options.delayTime, feedback: options.feedback, maxDelay: MAX_DELAY_SECONDS }); break;
       case 'Chorus': effect = new Tone.Chorus(options).start(); break;
       case 'Distortion': effect = new Tone.Distortion(options); break;
       case 'Phaser': effect = new Tone.Phaser(options); break;
-      case 'PingPongDelay': effect = new Tone.PingPongDelay(options); break;
+      case 'PingPongDelay': effect = new Tone.PingPongDelay({ ...options, maxDelay: MAX_DELAY_SECONDS }); break;
       case 'Tremolo': effect = new Tone.Tremolo(options).start(); break;
       case 'AutoFilter': effect = new Tone.AutoFilter(options).start(); break;
       case 'BitCrusher': effect = new Tone.BitCrusher(options); break;
@@ -123,6 +123,8 @@ export function createEffect(fx, label = 'effect') {
   }
   return effect;
 }
+
+const MAX_DELAY_SECONDS = 2.5;
 
 // Reverb re-renders its impulse response whenever decay or pre-delay changes;
 // wait for the slider to settle instead of rendering on every step

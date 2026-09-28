@@ -109,6 +109,14 @@ export const ORBIT_PALETTES = [
   generateOrbitPalette(4),
 ];
 
+// ── Synth types ──────────────────────────────────────────────────
+
+export const SYNTH_TYPES = ['Synth', 'FMSynth', 'AMSynth', 'MonoSynth', 'MembraneSynth', 'MetalSynth', 'PluckSynth'];
+
+export const NOTE_DURATIONS = ['32n', '16n', '8n', '4n', '2n', '1n'];
+
+export const CHORD_VOICINGS = ['triad', 'sus2', 'sus4', 'seventh', 'octaveDoubled'];
+
 // ── Defaults ─────────────────────────────────────────────────────
 
 export const DEFAULT_SCALE_CONFIG = {

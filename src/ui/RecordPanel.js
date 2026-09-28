@@ -1,4 +1,5 @@
 import { Recorder } from '../capture/Recorder.js';
+import { section, divider, selectRow } from './controls.js';
 
 /**
  * Global panel: viewport-resolution control + video/audio recording.
@@ -44,16 +45,7 @@ export class RecordPanel {
   }
 
   render() {
-    const section = document.createElement('details');
-    section.className = 'config-section';
-    section.open = false;
-
-    const summary = document.createElement('summary');
-    summary.textContent = 'Record';
-    section.appendChild(summary);
-
-    const body = document.createElement('div');
-    body.className = 'section-body';
+    const { el: sectionEl, body } = section('Record');
 
     // ─── Viewport Resolution ──────────────────────────────────────
     body.appendChild(this._createDivider('Viewport Resolution'));
@@ -177,11 +169,10 @@ export class RecordPanel {
       : 'This browser records WebM, so MP4 is converted after you stop. The first conversion downloads a ~32 MB encoder. Recording pauses while the tab is hidden.';
     body.appendChild(note);
 
-    section.appendChild(body);
-    this.el = section;
+    this.el = sectionEl;
 
     this._updateIdleStatus();
-    return section;
+    return sectionEl;
   }
 
   // ── Actions ────────────────────────────────────────────────────
@@ -319,25 +310,10 @@ export class RecordPanel {
     this._statusLine.textContent = `Idle — capture at ${w}×${h}`;
   }
 
-  // ── Tiny DOM helpers (mirrors MidiOscPanel style) ──────────────
+  // ── DOM helpers ────────────────────────────────────────────────
 
   _createSelectRow(labelText, options, value, onChange) {
-    const row = document.createElement('div');
-    row.className = 'control-row';
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    row.appendChild(label);
-    const select = document.createElement('select');
-    for (const opt of options) {
-      const option = document.createElement('option');
-      option.value = opt;
-      option.textContent = opt;
-      if (opt === value) option.selected = true;
-      select.appendChild(option);
-    }
-    select.addEventListener('change', () => onChange(select.value));
-    row.appendChild(select);
-    return row;
+    return selectRow({ label: labelText, options, value, onChange });
   }
 
   _getSelectValue(row) {
@@ -345,15 +321,6 @@ export class RecordPanel {
   }
 
   _createDivider(text) {
-    const wrapper = document.createElement('div');
-    wrapper.style.marginTop = '10px';
-    const label = document.createElement('div');
-    label.style.cssText = 'font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: #666688; margin-bottom: 6px;';
-    label.textContent = text;
-    const div = document.createElement('div');
-    div.className = 'divider';
-    wrapper.appendChild(label);
-    wrapper.appendChild(div);
-    return wrapper;
+    return divider(text);
   }
 }
