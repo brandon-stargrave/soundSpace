@@ -1,6 +1,18 @@
 {
   "name": "soundspace",
   "version": "0.1.0",
+  "private": true,
+  "description": "A 3D audio-visual instrument in the browser: orbiting nodes play notes when they cross, snapped to a musical scale.",
+  "license": "MIT",
+  "author": "Brandon Stargrave",
+  "homepage": "https://brandon-stargrave.github.io/soundSpace/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandon-stargrave/soundSpace.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
