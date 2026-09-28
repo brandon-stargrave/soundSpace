@@ -86,18 +86,55 @@ export class ConfigPanel {
 
     // Toggle button
     const toggle = document.getElementById('panel-toggle');
-    toggle.addEventListener('click', () => {
-      this._collapsed = !this._collapsed;
-      this.panel.classList.toggle('collapsed', this._collapsed);
-      // The letterboxed viewport (Record panel) centers within the visible
-      // (non-panel) region — re-fit when the panel slides in/out so the
-      // framing preview tracks the change. Wait for the slide transition
-      // (300ms) so getBoundingClientRect reads the panel's settled position.
-      const sm = this.engine && this.engine.sceneManager;
-      if (sm && sm._manualResolution) {
-        setTimeout(() => sm._applyCanvasDisplaySize(), 320);
-      }
-    });
+    toggle.addEventListener('click', () => this.setCollapsed(!this._collapsed));
+    // On a phone the open panel would cover most of the scene
+    if (window.matchMedia?.('(max-width: 700px)').matches) this.setCollapsed(true);
+  }
+
+  isCollapsed() {
+    return this._collapsed;
+  }
+
+  setCollapsed(collapsed) {
+    this._collapsed = !!collapsed;
+    this.panel.classList.toggle('collapsed', this._collapsed);
+    const toggle = document.getElementById('panel-toggle');
+    toggle.setAttribute('aria-expanded', String(!this._collapsed));
+    toggle.setAttribute('aria-label', this._collapsed ? 'Show panel' : 'Hide panel');
+    // The letterboxed viewport (Record panel) centers within the visible
+    // (non-panel) region — re-fit when the panel slides in/out so the
+    // framing preview tracks the change. Wait for the slide transition
+    // (300ms) so getBoundingClientRect reads the panel's settled position.
+    const sm = this.engine && this.engine.sceneManager;
+    if (sm && sm._manualResolution) {
+      setTimeout(() => sm._applyCanvasDisplaySize(), 320);
+    }
+    if (this.onCollapsedChange) this.onCollapsedChange(this._collapsed);
+  }
+
+  togglePause() {
+    this.engine.togglePause();
+    this._syncTransport();
+  }
+
+  toggleMute() {
+    this.engine.toggleMute();
+    this._syncTransport();
+  }
+
+  /** Reflect the engine's pause and mute state in the transport buttons. */
+  _syncTransport() {
+    const paused = this.engine.paused;
+    const muted = this.engine.muted;
+    this._playBtn.innerHTML = paused
+      ? '<span class="transport-icon" aria-hidden="true">&#9654;</span><span class="transport-label">Play</span>'
+      : '<span class="transport-icon" aria-hidden="true">&#9646;&#9646;</span><span class="transport-label">Pause</span>';
+    this._playBtn.title = paused ? 'Play (Space)' : 'Pause (Space)';
+    this._playBtn.classList.toggle('inactive', paused);
+    this._muteBtn.innerHTML = `<span class="transport-icon" aria-hidden="true">&#9835;</span><span class="transport-label">${muted ? 'Unmute' : 'Mute'}</span>`;
+    this._muteBtn.title = muted ? 'Unmute (M)' : 'Mute (M)';
+    this._muteBtn.classList.toggle('muted', muted);
+    this._muteBtn.setAttribute('aria-pressed', String(muted));
   }
 
   /** Get the currently selected orbit generator */
@@ -278,34 +315,17 @@ export class ConfigPanel {
     const bar = document.createElement('div');
     bar.className = 'transport-bar';
 
-    const playBtn = document.createElement('button');
-    playBtn.className = 'transport-btn';
-    playBtn.innerHTML = '<span class="transport-icon">&#9646;&#9646;</span><span class="transport-label">Pause</span>';
-    playBtn.title = 'Pause';
-    playBtn.addEventListener('click', () => {
-      const paused = this.engine.togglePause();
-      playBtn.innerHTML = paused
-        ? '<span class="transport-icon">&#9654;</span><span class="transport-label">Play</span>'
-        : '<span class="transport-icon">&#9646;&#9646;</span><span class="transport-label">Pause</span>';
-      playBtn.title = paused ? 'Play' : 'Pause';
-      playBtn.classList.toggle('inactive', paused);
-    });
+    this._playBtn = document.createElement('button');
+    this._playBtn.className = 'transport-btn';
+    this._playBtn.addEventListener('click', () => this.togglePause());
 
-    const muteBtn = document.createElement('button');
-    muteBtn.className = 'transport-btn';
-    muteBtn.innerHTML = '<span class="transport-icon">&#9835;</span><span class="transport-label">Mute</span>';
-    muteBtn.title = 'Mute';
-    muteBtn.addEventListener('click', () => {
-      const muted = this.engine.toggleMute();
-      muteBtn.classList.toggle('muted', muted);
-      muteBtn.innerHTML = muted
-        ? '<span class="transport-icon">&#9835;</span><span class="transport-label">Unmute</span>'
-        : '<span class="transport-icon">&#9835;</span><span class="transport-label">Mute</span>';
-      muteBtn.title = muted ? 'Unmute' : 'Mute';
-    });
+    this._muteBtn = document.createElement('button');
+    this._muteBtn.className = 'transport-btn';
+    this._muteBtn.addEventListener('click', () => this.toggleMute());
 
-    bar.appendChild(playBtn);
-    bar.appendChild(muteBtn);
+    bar.appendChild(this._playBtn);
+    bar.appendChild(this._muteBtn);
+    this._syncTransport();
 
     // Defocus mute toggle
     const defocusRow = document.createElement('div');

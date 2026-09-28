@@ -3,23 +3,38 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>soundSpace</title>
+  <title>soundSpace: a 3D audio-visual instrument</title>
+  <meta name="description" content="A 3D audio-visual instrument in your browser. Orbiting nodes play notes when they cross, snapped to a musical scale. Send MIDI and OSC, or record video." />
+  <meta name="theme-color" content="#050510" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="soundSpace" />
+  <meta property="og:description" content="A 3D audio-visual instrument in your browser. Orbiting nodes play notes when they cross, snapped to a musical scale." />
+  <meta property="og:url" content="https://brandon-stargrave.github.io/soundSpace/" />
+  <meta property="og:image" content="https://brandon-stargrave.github.io/soundSpace/og.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Glowing nodes orbiting a particle nebula in soundSpace" />
+  <meta name="twitter:card" content="summary_large_image" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div id="canvas-container"></div>
-  <button id="home-button" title="Reset camera (H)">&#8962;</button>
-  <button id="orbit-button" title="Orbit view (O)">&#8634;</button>
-  <button id="fullscreen-button" title="Fullscreen (F)">&#9974;</button>
+  <button id="home-button" title="Reset camera (H)" aria-label="Reset camera"><span aria-hidden="true">&#8962;</span></button>
+  <button id="orbit-button" title="Orbit view (O)" aria-label="Orbit view" aria-pressed="false"><span aria-hidden="true">&#8634;</span></button>
+  <button id="fullscreen-button" title="Fullscreen (F)" aria-label="Fullscreen" aria-pressed="false"><span aria-hidden="true">&#9974;</span></button>
   <div id="config-panel">
-    <button id="panel-toggle">&laquo;</button>
+    <button id="panel-toggle" aria-label="Hide panel" aria-expanded="true" aria-controls="panel-content">&laquo;</button>
     <div id="panel-content"></div>
   </div>
   <div id="start-overlay" class="loading">
     <div id="loader-ring"></div>
-    <button id="start-button">soundSpace</button>
-    <p id="start-status" class="start-subtitle">initializing</p>
+    <button id="start-button" aria-label="Start soundSpace">soundSpace</button>
+    <p id="start-status" class="start-subtitle" role="status">initializing</p>
     <div id="loader-bar-wrap"><div id="loader-bar"></div></div>
+    <noscript><p class="start-subtitle">soundSpace needs JavaScript to run.</p></noscript>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

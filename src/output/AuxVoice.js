@@ -1,5 +1,5 @@
 import * as Tone from 'tone';
-import { rampParam } from '../util/audio.js';
+import { createEffect, createSynthVoice, setEffectParam, disposeNode } from './effects.js';
 
 /**
  * AuxVoice —sustained-drone synth for the Harmonic Orbit pad + bass voices.
@@ -50,8 +50,9 @@ export class AuxVoice {
     this._chainDirty = false;
   }
 
+  /** Build the audio graph. The engine has already started the AudioContext. */
   async init() {
-    await Tone.start();
+    if (this._initialized) return;
     this._buildChain();
     this._initialized = true;
   }
@@ -150,13 +151,22 @@ export class AuxVoice {
 
   /** Update config and rebuild the full chain (e.g. synth-type change). */
   setConfig(updates) {
+    const previousRelease = this._releaseSeconds();
     Object.assign(this.config, structuredClone(updates));
-    if (this._initialized) {
+    if (!this._initialized) return;
+    if ('effects' in updates) {
       const heldSnapshot = [...this._held];
       this._buildChain();
       this._held.clear();
       if (heldSnapshot.length) this.hold(heldSnapshot);
+    } else {
+      // Synth type or options: swap the voice pool, keep the effects and their tails
+      this._rebuildChainKeepingHeld(previousRelease);
     }
+  }
+
+  _releaseSeconds() {
+    return Number(this.config.synthOptions?.envelope?.release ?? 0.8);
   }
 
   getConfig() {
@@ -173,56 +183,18 @@ export class AuxVoice {
     const effect = this._effects.find(e => e && e._fxType === effectType);
     if (!effect) return;
     try {
-      if (paramName === 'wet') {
-        rampParam(effect.wet, value);
-      } else if (paramName === 'decay' && effectType === 'Reverb') {
-        effect.decay = value;
-        effect.generate && effect.generate();
-      } else if (paramName === 'preDelay' && effectType === 'Reverb') {
-        effect.preDelay = value;
-        effect.generate && effect.generate();
-      } else if (paramName === 'frequency' && effectType === 'Filter') {
-        rampParam(effect.frequency, value);
-      } else if (paramName === 'Q' && effectType === 'Filter') {
-        rampParam(effect.Q, value);
-      } else if (paramName === 'type' && effectType === 'Filter') {
-        effect.type = value;
-      } else if (paramName === 'rolloff' && effectType === 'Filter') {
-        effect.rolloff = value;
-      } else if (effectType === 'EQ3' && (paramName === 'low' || paramName === 'mid' || paramName === 'high')) {
-        rampParam(effect[paramName], value);
-      } else if (effectType === 'EQ3' && paramName === 'lowFrequency') {
-        rampParam(effect.lowFrequency, value);
-      } else if (effectType === 'EQ3' && paramName === 'highFrequency') {
-        rampParam(effect.highFrequency, value);
-      } else if (paramName === 'feedback') {
-        if (effect.feedback?.value !== undefined) rampParam(effect.feedback, value);
-        else effect.feedback = value;
-      } else if (paramName === 'delayTime') {
-        if (effect.delayTime?.value !== undefined) rampParam(effect.delayTime, value);
-        else effect.delayTime = value;
-      } else if (effect[paramName] !== undefined) {
-        if (effect[paramName] && effect[paramName].value !== undefined) {
-          rampParam(effect[paramName], value);
-        } else {
-          effect[paramName] = value;
-        }
-      }
+      setEffectParam(effect, paramName, value);
     } catch (e) {
       console.warn(`AuxVoice.setEffectParam: ${effectType}.${paramName}`, e.message);
     }
   }
 
   /**
-   * Update a synth-level parameter such as "envelope.attack", "oscillator.type",
-   * etc. Two-step operation:
-   *   1) Persist in config.synthOptions.
-   *   2) Mark the chain dirty — the next hold() call will gracefully retire
-   *      the current voice pool and build a fresh one from this config, so
-   *      the upcoming transpose's new notes are constructed from scratch
-   *      with the updated options. (Matches the main orbit synth pattern.)
-   * Deliberately does NOT attempt in-place set() on live voices — in practice
-   * that either doesn't propagate (PolySynth) or corrupts voice state.
+   * Update a synth-level parameter such as "envelope.attack" or
+   * "oscillator.type". It is stored in config.synthOptions and applied to the
+   * live voices, so the change is heard on the drones right away. If a synth
+   * type rejects the option, the pool is rebuilt from the config on the next
+   * hold() instead.
    */
   setSynthParam(path, value) {
     const parts = path.split('.');
@@ -235,7 +207,15 @@ export class AuxVoice {
     }
     tgt[lastKey] = value;
 
-    this._chainDirty = true;
+    const patch = {};
+    let node = patch;
+    for (let i = 0; i < parts.length - 1; i++) node = node[parts[i]] = {};
+    node[lastKey] = value;
+    try {
+      for (const voice of this._voices) voice.synth.set(patch);
+    } catch {
+      this._chainDirty = true;
+    }
   }
 
   /**
@@ -246,7 +226,7 @@ export class AuxVoice {
    * current config, and any previously-held notes are re-attacked on fresh
    * voices so the drone continues seamlessly.
    */
-  _rebuildChainKeepingHeld() {
+  _rebuildChainKeepingHeld(retiringRelease = this._releaseSeconds()) {
     if (!this._initialized) return;
     const held = [...this._held];
     const now = Tone.now();
@@ -261,14 +241,11 @@ export class AuxVoice {
         voice.freq = null;
       }
     }
-    // Schedule disposal after the release envelope finishes (+ small pad).
-    const releaseSec = Number(this.config.synthOptions?.envelope?.release ?? 0.8);
+    // Dispose after the retiring voices' own release has finished; they still
+    // carry the old envelope even when the config's release just got shorter
     setTimeout(() => {
-      for (const v of retiring) {
-        try { v.synth.disconnect(); } catch {}
-        try { v.synth.dispose(); } catch {}
-      }
-    }, (releaseSec + 0.2) * 1000);
+      for (const v of retiring) disposeNode(v.synth);
+    }, (Number(retiringRelease) + 0.2) * 1000);
 
     // 2) Build a fresh voice pool (doesn't touch fx/gain — they stay wired)
     this._buildVoicePool();
@@ -299,7 +276,7 @@ export class AuxVoice {
 
     // 1) Effects chain
     this._effects = (this.config.effects || [])
-      .map(fx => this._createEffect(fx))
+      .map(fx => createEffect(fx, 'AuxVoice'))
       .filter(Boolean);
 
     // 2) Volume gain node at the tail
@@ -334,18 +311,11 @@ export class AuxVoice {
       console.warn('AuxVoice: _buildVoicePool called before fx chain exists');
       return;
     }
-    const SynthClass = this._getSynthClass(this.config.synthType);
     const poolSize = this.config.mode === 'poly' ? POLY_POOL_SIZE : MONO_POOL_SIZE;
 
     this._voices = [];
     for (let i = 0; i < poolSize; i++) {
-      let synth;
-      try {
-        synth = new SynthClass(this.config.synthOptions || {});
-      } catch (e) {
-        console.warn(`AuxVoice: voice ${i} synth options rejected, using defaults`, e.message);
-        synth = new SynthClass();
-      }
+      const synth = createSynthVoice(this.config.synthType, this.config.synthOptions, 'AuxVoice');
       synth.connect(this._fxHead);
       this._voices.push({ synth, freq: null });
     }
@@ -364,58 +334,11 @@ export class AuxVoice {
     this._synth = null;
     this._fxHead = null;
 
-    for (const fx of this._effects) {
-      try { fx.disconnect(); } catch {}
-      try { fx.dispose(); } catch {}
-    }
+    for (const fx of this._effects) disposeNode(fx);
     this._effects = [];
 
-    if (this._gain) {
-      try { this._gain.disconnect(); } catch {}
-      try { this._gain.dispose(); } catch {}
-      this._gain = null;
-    }
-  }
-
-  _getSynthClass(type) {
-    const map = {
-      'Synth': Tone.Synth,
-      'FMSynth': Tone.FMSynth,
-      'AMSynth': Tone.AMSynth,
-      'MonoSynth': Tone.MonoSynth,
-      'MembraneSynth': Tone.MembraneSynth,
-      'MetalSynth': Tone.MetalSynth,
-      'PluckSynth': Tone.PluckSynth,
-    };
-    return map[type] || Tone.Synth;
-  }
-
-  _createEffect(fx) {
-    const { type, wet, options } = fx;
-    let effect;
-    try {
-      switch (type) {
-        case 'Filter': effect = new Tone.Filter(options.frequency, options.type, options.rolloff); if (options.Q !== undefined) effect.Q.value = options.Q; break;
-        case 'EQ3': effect = new Tone.EQ3(options.low, options.mid, options.high); effect.lowFrequency.value = options.lowFrequency || 400; effect.highFrequency.value = options.highFrequency || 2500; break;
-        case 'Reverb': effect = new Tone.Reverb(options); break;
-        case 'FeedbackDelay': effect = new Tone.FeedbackDelay(options.delayTime, options.feedback); break;
-        case 'Chorus': effect = new Tone.Chorus(options).start(); break;
-        case 'Distortion': effect = new Tone.Distortion(options); break;
-        case 'Phaser': effect = new Tone.Phaser(options); break;
-        case 'PingPongDelay': effect = new Tone.PingPongDelay(options); break;
-        case 'Tremolo': effect = new Tone.Tremolo(options).start(); break;
-        case 'AutoFilter': effect = new Tone.AutoFilter(options).start(); break;
-        case 'BitCrusher': effect = new Tone.BitCrusher(options); break;
-        case 'Freeverb': effect = new Tone.Freeverb(options); break;
-        default: return null;
-      }
-      if (wet !== undefined && effect.wet) effect.wet.value = wet;
-      effect._fxType = type;
-    } catch (e) {
-      console.warn(`AuxVoice: failed to create effect ${type}`, e);
-      return null;
-    }
-    return effect;
+    disposeNode(this._gain);
+    this._gain = null;
   }
 
   dispose() {

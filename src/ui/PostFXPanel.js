@@ -62,7 +62,7 @@ export class PostFXPanel {
     if (this.sm.rgbShiftPass) {
       body.appendChild(this._createDivider('Chromatic Aberration'));
       body.appendChild(this._createRangeRow('Trigger Intensity', 0, 1, 0.05,
-        this.sm._rgbShiftMaxIntensity || 0.4,
+        this.sm._rgbShiftMaxIntensity ?? 0.4,
         (val) => { this.sm._rgbShiftMaxIntensity = val; }
       ));
     }

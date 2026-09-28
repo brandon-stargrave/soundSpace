@@ -44,11 +44,41 @@ export class MidiOscPanel {
 
     const midi = this.engine.midiOutput;
 
-    // Enable toggle
-    body.appendChild(this._createToggleRow('MIDI Enabled', midi.enabled, (val) => {
-      if (!val) midi.allNotesOff();
-      midi.enabled = val;
-    }));
+    // Status line: why MIDI isn't working, or where each orbit goes
+    const midiStatus = document.createElement('div');
+    midiStatus.className = 'panel-note';
+    midiStatus.setAttribute('role', 'status');
+    const updateMidiStatus = () => {
+      const base = midi.config.channel;
+      const ch = (n) => Math.min(16, base + n);
+      const messages = {
+        unsupported: 'This browser has no Web MIDI. Try Chrome, Edge or Firefox.',
+        denied: 'MIDI access was blocked. Allow it in the site settings, then turn MIDI on again.',
+      };
+      if (messages[midi.status]) {
+        midiStatus.textContent = messages[midi.status];
+      } else if (midi.status === 'ready' && midi.getOutputList().length === 0) {
+        midiStatus.textContent = 'No MIDI outputs found. Connect a device or start a virtual MIDI port.';
+      } else {
+        midiStatus.textContent = `Orbit 1 → Ch ${ch(0)}, Orbit 2 → Ch ${ch(1)}, and so on.`;
+      }
+    };
+
+    // Enable toggle. Turning MIDI on is what asks the browser for access.
+    const midiToggleRow = this._createToggleRow('MIDI Enabled', midi.enabled, async (val) => {
+      if (!val) {
+        midi.allNotesOff();
+        midi.enabled = false;
+        updateMidiStatus();
+        return;
+      }
+      const ok = await midi.init();
+      midi.enabled = ok;
+      if (!ok) midiToggleRow.querySelector('input').checked = false;
+      populateDevices();
+      updateMidiStatus();
+    });
+    body.appendChild(midiToggleRow);
 
     // Device selector
     const deviceRow = document.createElement('div');
@@ -73,7 +103,7 @@ export class MidiOscPanel {
       }
     };
     populateDevices();
-    midi.onDevicesChanged = populateDevices;
+    midi.onDevicesChanged = () => { populateDevices(); updateMidiStatus(); };
     if (!navigator.requestMIDIAccess) deviceSelect.disabled = true;
     deviceSelect.addEventListener('change', () => {
       midi.selectOutput(deviceSelect.value);
@@ -84,6 +114,7 @@ export class MidiOscPanel {
     // Base channel
     body.appendChild(this._createRangeRow('Base Channel', 1, 16, 1, midi.config.channel, (val) => {
       midi.setConfig({ channel: val });
+      updateMidiStatus();
     }));
 
     // Note duration
@@ -96,11 +127,8 @@ export class MidiOscPanel {
       midi.setConfig({ velocityCurve: val });
     }));
 
-    // Info
-    const midiInfo = document.createElement('div');
-    midiInfo.style.cssText = 'font-size: 9px; color: #556; margin-top: 6px;';
-    midiInfo.textContent = 'Orbit 1 → Ch 1, Orbit 2 → Ch 2, etc.';
-    body.appendChild(midiInfo);
+    updateMidiStatus();
+    body.appendChild(midiStatus);
 
     // ── OSC ──
     body.appendChild(this._createDivider('OSC'));

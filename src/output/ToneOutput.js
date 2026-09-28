@@ -1,21 +1,25 @@
 import * as Tone from 'tone';
 import { DEFAULT_SYNTH_CONFIG } from '../util/constants.js';
 import { clamp } from '../util/math.js';
-import { rampParam } from '../util/audio.js';
+import { createEffect, createSynthVoice, setEffectParam, disposeNode } from './effects.js';
+
+// Fade applied when this output is removed, so tails don't cut off with a click
+const REMOVE_FADE_SECONDS = 0.04;
 
 /**
  * Local audio output using Tone.js.
- * Uses a voice pool architecture: each note gets its own mono synth + Panner3D
- * so strict per-note 3D spatialization is possible without overlapping notes
- * dragging each other's positions. Effects chain is shared downstream of the
- * voice panners (standard mix-bus behavior).
+ * Uses a voice pool architecture: each note gets its own mono synth. With
+ * spatial audio on, every voice runs through its own Panner3D so notes can be
+ * placed independently; with it off, voices feed the effects bus directly.
+ * The effects chain is shared downstream of the voices (standard mix-bus
+ * behavior) and ends in an output gain that feeds the master bus.
  */
 export class ToneOutput {
   constructor(config = {}) {
     this.config = structuredClone({ ...DEFAULT_SYNTH_CONFIG, ...config });
     this.enabled = true;
-    this.synth = null;            // legacy ref (unused with voice pool)
     this.effectsChain = [];
+    this._output = null;          // Gain after the effects chain
     this._voices = [];            // Array<{ synth, panner, busyUntil }>
     this._voiceCursor = 0;
     this._voicePoolSize = 12;
@@ -24,9 +28,9 @@ export class ToneOutput {
     this._initialized = false;
   }
 
-  /** Must be called from a user gesture context */
+  /** Build the audio graph. The engine has already started the AudioContext. */
   async init() {
-    await Tone.start();
+    if (this._initialized) return;
     this._buildSynthChain();
     this._initialized = true;
   }
@@ -43,30 +47,17 @@ export class ToneOutput {
     // L/R — appropriate for portrait phones with top/bottom speakers.
     if (this._spatialEnabled && triggerEvent.position) {
       const p = triggerEvent.position;
-      if (this._spatialAxis === 'vertical') {
-        voice.panner.positionX.value = p.y;
-        voice.panner.positionY.value = p.x;
-      } else {
-        voice.panner.positionX.value = p.x;
-        voice.panner.positionY.value = p.y;
-      }
+      const vertical = this._spatialAxis === 'vertical';
+      voice.panner.positionX.value = vertical ? p.y : p.x;
+      voice.panner.positionY.value = vertical ? p.x : p.y;
       voice.panner.positionZ.value = p.z ?? 0;
-    } else {
-      voice.panner.positionX.value = 0;
-      voice.panner.positionY.value = 0;
-      voice.panner.positionZ.value = 0;
     }
 
     try {
-      voice.synth.triggerAttackRelease(
-        quantized.frequency,
-        this.config.noteDuration,
-        Tone.now(),
-        velocity
-      );
+      const now = Tone.now();
+      voice.synth.triggerAttackRelease(quantized.frequency, this.config.noteDuration, now, velocity);
       // Mark busy for note duration + release envelope tail + small pad
-      const durSec = this._durationToSeconds(this.config.noteDuration);
-      voice.busyUntil = Tone.now() + durSec + this._estimateReleaseTail();
+      voice.busyUntil = now + this._durationToSeconds(this.config.noteDuration) + this._estimateReleaseTail();
     } catch (e) {
       console.warn('ToneOutput: note dropped', e.message);
     }
@@ -104,9 +95,10 @@ export class ToneOutput {
     return Number(rel) + 0.05; // small pad
   }
 
-  /** Enable/disable spatial panning — affects future triggers only */
+  /** Enable/disable spatial panning. Voices bypass their panners while it's off. */
   setSpatialEnabled(v) {
     this._spatialEnabled = !!v;
+    for (const voice of this._voices) this._routeVoice(voice);
   }
 
   /**
@@ -118,137 +110,111 @@ export class ToneOutput {
     this._spatialAxis = axis === 'vertical' ? 'vertical' : 'horizontal';
   }
 
-  /** Rebuild the full audio graph: voice pool + shared FX chain + destination */
+  /** Where voices feed in: the first effect, or the output gain when there are none. */
+  _fxHead() {
+    return this.effectsChain.length > 0 ? this.effectsChain[0] : this._output;
+  }
+
+  /** Connect a voice straight to the effects bus, or through its panner when spatial is on. */
+  _routeVoice(voice) {
+    try { voice.synth.disconnect(); } catch {}
+    voice.synth.connect(this._spatialEnabled ? voice.panner : this._fxHead());
+  }
+
+  /** Rebuild the full audio graph: voice pool + shared FX chain + output gain */
   _buildSynthChain() {
     this._disposeChain();
 
-    // 1) Build shared effects chain
+    this._output = new Tone.Gain(1);
+    this._output.connect(Tone.getDestination());
+
+    // Shared effects chain: fx[0] → fx[1] → ... → fx[last] → output
     this.effectsChain = this.config.effects
-      .map(fx => this._createEffect(fx))
+      .map(fx => createEffect(fx, 'ToneOutput'))
       .filter(Boolean);
+    const chain = [...this.effectsChain, this._output];
+    for (let i = 0; i < chain.length - 1; i++) chain[i].connect(chain[i + 1]);
 
-    // 2) Connect FX chain: fx[0] → fx[1] → ... → fx[last] → destination
-    if (this.effectsChain.length > 0) {
-      for (let i = 0; i < this.effectsChain.length - 1; i++) {
-        this.effectsChain[i].connect(this.effectsChain[i + 1]);
-      }
-      this.effectsChain[this.effectsChain.length - 1].connect(Tone.getDestination());
-    }
-
-    // 3) Build voice pool — each voice = mono synth → Panner3D → fx bus
     this._buildVoicePool();
   }
 
-  /** Build the per-voice pool (synth + panner pairs). Feeds shared FX bus. */
+  /** Build the per-voice pool (synth + panner pairs). Feeds the shared FX bus. */
   _buildVoicePool() {
-    this._disposeVoices();
-
-    const SynthClass = this._getSynthClass(this.config.synthType);
-    const fxHead = this.effectsChain.length > 0
-      ? this.effectsChain[0]
-      : Tone.getDestination();
-
+    const fxHead = this._fxHead();
     for (let i = 0; i < this._voicePoolSize; i++) {
-      let synth;
-      try {
-        synth = new SynthClass(this.config.synthOptions || {});
-      } catch (e) {
-        // Some synth types don't accept arbitrary oscillator options
-        // (e.g. MetalSynth ignores oscillator). Fall back to no options.
-        console.warn(`ToneOutput: voice ${i} synth options rejected, using defaults`, e.message);
-        synth = new SynthClass();
-      }
-
+      const synth = createSynthVoice(this.config.synthType, this.config.synthOptions, 'ToneOutput');
+      // Inverse distance with the reference near the default camera distance,
+      // so turning spatial audio on doesn't drop the whole mix by 6–12 dB
       const panner = new Tone.Panner3D({
         panningModel: 'HRTF',
         distanceModel: 'inverse',
-        refDistance: 2,
+        refDistance: 6,
         rolloffFactor: 1,
-        maxDistance: 20,
+        maxDistance: 40,
         positionX: 0, positionY: 0, positionZ: 0,
       });
-
-      synth.connect(panner);
       panner.connect(fxHead);
-
-      this._voices.push({ synth, panner, busyUntil: 0 });
+      const voice = { synth, panner, busyUntil: 0 };
+      this._routeVoice(voice);
+      this._voices.push(voice);
     }
-  }
-
-  _disposeVoices() {
-    for (const v of this._voices) {
-      try { v.synth.disconnect(); } catch {}
-      try { v.panner.disconnect(); } catch {}
-      try { v.synth.dispose(); } catch {}
-      try { v.panner.dispose(); } catch {}
-    }
-    this._voices = [];
     this._voiceCursor = 0;
   }
 
-  _getSynthClass(type) {
-    const map = {
-      'Synth': Tone.Synth,
-      'FMSynth': Tone.FMSynth,
-      'AMSynth': Tone.AMSynth,
-      'MonoSynth': Tone.MonoSynth,
-      'MembraneSynth': Tone.MembraneSynth,
-      'MetalSynth': Tone.MetalSynth,
-      'PluckSynth': Tone.PluckSynth,
-    };
-    return map[type] || Tone.Synth;
-  }
-
-  _createEffect(fx) {
-    const { type, wet, options } = fx;
-    let effect;
-    try {
-      switch (type) {
-        case 'Filter': effect = new Tone.Filter(options.frequency, options.type, options.rolloff); if (options.Q !== undefined) effect.Q.value = options.Q; break;
-        case 'EQ3': effect = new Tone.EQ3(options.low, options.mid, options.high); effect.lowFrequency.value = options.lowFrequency || 400; effect.highFrequency.value = options.highFrequency || 2500; break;
-        case 'Reverb': effect = new Tone.Reverb(options); break;
-        case 'FeedbackDelay': effect = new Tone.FeedbackDelay(options.delayTime, options.feedback); break;
-        case 'Chorus': effect = new Tone.Chorus(options).start(); break;
-        case 'Distortion': effect = new Tone.Distortion(options); break;
-        case 'Phaser': effect = new Tone.Phaser(options); break;
-        case 'PingPongDelay': effect = new Tone.PingPongDelay(options); break;
-        case 'Tremolo': effect = new Tone.Tremolo(options).start(); break;
-        case 'AutoFilter': effect = new Tone.AutoFilter(options).start(); break;
-        case 'BitCrusher': effect = new Tone.BitCrusher(options); break;
-        case 'Freeverb': effect = new Tone.Freeverb(options); break;
-        default: return null;
-      }
-      if (wet !== undefined && effect.wet) effect.wet.value = wet;
-      effect._fxType = type; // tag for live param lookup
-    } catch (e) {
-      console.warn(`ToneOutput: failed to create effect ${type}`, e);
-      return null;
+  /**
+   * Swap in a fresh voice pool (e.g. a new synth type). The old voices are
+   * released and disposed once their release tail has finished, so notes that
+   * are sounding fade out instead of cutting off.
+   */
+  _replaceVoicePool(releaseSeconds) {
+    const retiring = this._voices;
+    this._voices = [];
+    const now = Tone.now();
+    for (const v of retiring) {
+      try { v.synth.triggerRelease?.(now); } catch {}
     }
-    return effect;
+    setTimeout(() => {
+      for (const v of retiring) {
+        disposeNode(v.synth);
+        disposeNode(v.panner);
+      }
+    }, (Number(releaseSeconds) + 0.2) * 1000);
+    this._buildVoicePool();
   }
 
-  /** Update synth config and rebuild */
+  /**
+   * Update the synth config. Only what changed is touched: volume and note
+   * length are read per note, envelope and oscillator edits go to the live
+   * voices, a synth type change swaps the voice pool, and only a new effects
+   * list rebuilds the whole graph.
+   */
   setConfig(updates) {
+    const previousRelease = this._estimateReleaseTail();
+    const previousType = this.config.synthType;
     Object.assign(this.config, structuredClone(updates));
-    if (this._initialized) {
+    if (!this._initialized) return;
+
+    if ('effects' in updates) {
       this._buildSynthChain();
+    } else if ('synthType' in updates && updates.synthType !== previousType) {
+      this._replaceVoicePool(previousRelease);
+    } else if ('synthOptions' in updates) {
+      try {
+        for (const v of this._voices) v.synth.set(updates.synthOptions);
+      } catch (e) {
+        // Some synth types reject options they don't have; rebuild from the config instead
+        this._replaceVoicePool(previousRelease);
+      }
     }
   }
 
   /** Swap delay type (FeedbackDelay ↔ PingPongDelay) without full chain rebuild */
   swapDelayType(newType) {
     const oldType = newType === 'PingPongDelay' ? 'FeedbackDelay' : 'PingPongDelay';
-    const fxIndex = this.config.effects.findIndex(f => f.type === oldType);
-    if (fxIndex === -1) return;
-
-    // Preserve current params
-    const fx = this.config.effects[fxIndex];
+    const fx = this.config.effects.find(f => f.type === oldType);
+    if (!fx) return;
     fx.type = newType;
-
-    // Rebuild chain to apply the swap
-    if (this._initialized) {
-      this._buildSynthChain();
-    }
+    if (this._initialized) this._buildSynthChain();
   }
 
   /** Update a single effect param live without rebuilding the chain */
@@ -259,56 +225,13 @@ export class ToneOutput {
       : effectType;
     const fx = this.config.effects.find(f => f.type === lookupType);
     if (fx) {
-      if (paramName === 'wet') {
-        fx.wet = value;
-      } else {
-        fx.options[paramName] = value;
-      }
+      if (paramName === 'wet') fx.wet = value;
+      else fx.options[paramName] = value;
     }
-    // Apply to live effect instance (matched by _fxType tag)
     const effect = this.effectsChain.find(e => e && e._fxType === lookupType);
     if (!effect) return;
     try {
-      if (paramName === 'wet') {
-        rampParam(effect.wet, value);
-      } else if (paramName === 'decay' && effectType === 'Reverb') {
-        // Reverb decay requires rebuilding impulse response
-        effect.decay = value;
-        effect.generate && effect.generate();
-      } else if (paramName === 'preDelay' && effectType === 'Reverb') {
-        effect.preDelay = value;
-        effect.generate && effect.generate();
-      } else if (paramName === 'frequency' && effectType === 'Filter') {
-        rampParam(effect.frequency, value);
-      } else if (paramName === 'Q' && effectType === 'Filter') {
-        rampParam(effect.Q, value);
-      } else if (paramName === 'type' && effectType === 'Filter') {
-        effect.type = value;
-      } else if (paramName === 'rolloff' && effectType === 'Filter') {
-        effect.rolloff = value;
-      } else if (effectType === 'Chorus' && paramName === 'frequency') {
-        rampParam(effect.frequency, value);
-      } else if (effectType === 'Chorus' && paramName === 'delayTime') {
-        effect.delayTime = value;
-      } else if (effectType === 'Chorus' && paramName === 'depth') {
-        effect.depth = value;
-      } else if (effectType === 'EQ3' && (paramName === 'low' || paramName === 'mid' || paramName === 'high')) {
-        rampParam(effect[paramName], value);
-      } else if (paramName === 'lowFrequency' && effectType === 'EQ3') {
-        rampParam(effect.lowFrequency, value);
-      } else if (paramName === 'highFrequency' && effectType === 'EQ3') {
-        rampParam(effect.highFrequency, value);
-      } else if (paramName === 'feedback') {
-        rampParam(effect.feedback, value);
-      } else if (paramName === 'delayTime') {
-        rampParam(effect.delayTime, value);
-      } else if (effect[paramName] !== undefined) {
-        if (effect[paramName] && effect[paramName].value !== undefined) {
-          rampParam(effect[paramName], value);
-        } else {
-          effect[paramName] = value;
-        }
-      }
+      setEffectParam(effect, paramName, value);
     } catch (e) {
       console.warn(`setEffectParam: ${effectType}.${paramName}`, e.message);
     }
@@ -319,25 +242,37 @@ export class ToneOutput {
   }
 
   _disposeChain() {
-    // Dispose voices first (they connect to the fx head)
-    this._disposeVoices();
-
-    // Legacy synth ref (kept null with voice pool architecture, but stay safe)
-    if (this.synth) {
-      try { this.synth.disconnect(); } catch {}
-      try { this.synth.dispose(); } catch {}
-      this.synth = null;
+    for (const v of this._voices) {
+      disposeNode(v.synth);
+      disposeNode(v.panner);
     }
-
-    for (const fx of this.effectsChain) {
-      try { fx.disconnect(); } catch {}
-      try { fx.dispose(); } catch {}
-    }
+    this._voices = [];
+    this._voiceCursor = 0;
+    for (const fx of this.effectsChain) disposeNode(fx);
     this.effectsChain = [];
+    disposeNode(this._output);
+    this._output = null;
   }
 
+  /** Fade out, then tear down the graph. */
   dispose() {
-    this._disposeChain();
+    this.enabled = false;
     this._initialized = false;
+    if (!this._output) return;
+    const voices = this._voices;
+    const effects = this.effectsChain;
+    const output = this._output;
+    this._voices = [];
+    this.effectsChain = [];
+    this._output = null;
+    try { output.gain.rampTo(0, REMOVE_FADE_SECONDS); } catch {}
+    setTimeout(() => {
+      for (const v of voices) {
+        disposeNode(v.synth);
+        disposeNode(v.panner);
+      }
+      for (const fx of effects) disposeNode(fx);
+      disposeNode(output);
+    }, (REMOVE_FADE_SECONDS + 0.05) * 1000);
   }
 }

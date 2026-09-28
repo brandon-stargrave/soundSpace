@@ -42,16 +42,16 @@ export class OutputPanel {
     const envelope = toneConfig.synthOptions?.envelope || {};
     body.appendChild(this._createDivider('Envelope'));
 
-    body.appendChild(this._createRangeRow('Attack', 0.001, 1, 0.001, envelope.attack || 0.005, (val) => {
+    body.appendChild(this._createRangeRow('Attack', 0.001, 1, 0.001, envelope.attack ?? 0.005, (val) => {
       this._updateEnvelope('attack', val);
     }));
-    body.appendChild(this._createRangeRow('Decay', 0.01, 2, 0.01, envelope.decay || 0.3, (val) => {
+    body.appendChild(this._createRangeRow('Decay', 0.01, 2, 0.01, envelope.decay ?? 0.3, (val) => {
       this._updateEnvelope('decay', val);
     }));
-    body.appendChild(this._createRangeRow('Sustain', 0, 1, 0.01, envelope.sustain || 0.1, (val) => {
+    body.appendChild(this._createRangeRow('Sustain', 0, 1, 0.01, envelope.sustain ?? 0.1, (val) => {
       this._updateEnvelope('sustain', val);
     }));
-    body.appendChild(this._createRangeRow('Release', 0.01, 4, 0.01, envelope.release || 0.8, (val) => {
+    body.appendChild(this._createRangeRow('Release', 0.01, 4, 0.01, envelope.release ?? 0.8, (val) => {
       this._updateEnvelope('release', val);
     }));
 
@@ -60,13 +60,13 @@ export class OutputPanel {
     if (filterFx) {
       body.appendChild(this._createDivider('Filter'));
 
-      body.appendChild(this._createRangeRow('Frequency', 20, 20000, 1, filterFx.options.frequency || 2000, (val) => {
+      body.appendChild(this._createRangeRow('Frequency', 20, 20000, 1, filterFx.options.frequency ?? 2000, (val) => {
         this.toneOutput.setEffectParam('Filter', 'frequency', val);
       }));
       body.appendChild(this._createSelectRow('Type', ['lowpass', 'highpass', 'bandpass', 'notch'], filterFx.options.type || 'lowpass', (val) => {
         this.toneOutput.setEffectParam('Filter', 'type', val);
       }));
-      body.appendChild(this._createRangeRow('Resonance (Q)', 0.1, 15, 0.1, filterFx.options.Q || 1, (val) => {
+      body.appendChild(this._createRangeRow('Resonance (Q)', 0.1, 15, 0.1, filterFx.options.Q ?? 1, (val) => {
         this.toneOutput.setEffectParam('Filter', 'Q', val);
       }));
       body.appendChild(this._createSelectRow('Rolloff', ['-12', '-24', '-48', '-96'], String(filterFx.options.rolloff || -12), (val) => {
@@ -82,13 +82,13 @@ export class OutputPanel {
       body.appendChild(this._createRangeRow('Mix', 0, 1, 0.01, chorusFx.wet, (val) => {
         this.toneOutput.setEffectParam('Chorus', 'wet', val);
       }));
-      body.appendChild(this._createRangeRow('Rate', 0.1, 10, 0.1, chorusFx.options.frequency || 1.5, (val) => {
+      body.appendChild(this._createRangeRow('Rate', 0.1, 10, 0.1, chorusFx.options.frequency ?? 1.5, (val) => {
         this.toneOutput.setEffectParam('Chorus', 'frequency', val);
       }));
-      body.appendChild(this._createRangeRow('Delay', 0.5, 20, 0.5, chorusFx.options.delayTime || 3.5, (val) => {
+      body.appendChild(this._createRangeRow('Delay', 0.5, 20, 0.5, chorusFx.options.delayTime ?? 3.5, (val) => {
         this.toneOutput.setEffectParam('Chorus', 'delayTime', val);
       }));
-      body.appendChild(this._createRangeRow('Depth', 0, 1, 0.05, chorusFx.options.depth || 0.7, (val) => {
+      body.appendChild(this._createRangeRow('Depth', 0, 1, 0.05, chorusFx.options.depth ?? 0.7, (val) => {
         this.toneOutput.setEffectParam('Chorus', 'depth', val);
       }));
     }
@@ -101,10 +101,10 @@ export class OutputPanel {
       body.appendChild(this._createRangeRow('Rev Mix', 0, 1, 0.01, reverbFx.wet, (val) => {
         this.toneOutput.setEffectParam('Reverb', 'wet', val);
       }));
-      body.appendChild(this._createRangeRow('Rev Decay', 0.1, 10, 0.1, reverbFx.options.decay || 2.5, (val) => {
+      body.appendChild(this._createRangeRow('Rev Decay', 0.1, 10, 0.1, reverbFx.options.decay ?? 2.5, (val) => {
         this.toneOutput.setEffectParam('Reverb', 'decay', val);
       }));
-      body.appendChild(this._createRangeRow('Rev Pre-Delay', 0, 0.1, 0.001, reverbFx.options.preDelay || 0.01, (val) => {
+      body.appendChild(this._createRangeRow('Rev Pre-Delay', 0, 0.1, 0.001, reverbFx.options.preDelay ?? 0.01, (val) => {
         this.toneOutput.setEffectParam('Reverb', 'preDelay', val);
       }));
     }
@@ -124,7 +124,7 @@ export class OutputPanel {
       body.appendChild(this._createRangeRow('Dly Mix', 0, 1, 0.01, delayFx.wet, (val) => {
         this.toneOutput.setEffectParam(dlyType, 'wet', val);
       }));
-      body.appendChild(this._createRangeRow('Dly Feedback', 0, 0.9, 0.01, delayFx.options.feedback || 0.3, (val) => {
+      body.appendChild(this._createRangeRow('Dly Feedback', 0, 0.9, 0.01, delayFx.options.feedback ?? 0.3, (val) => {
         this.toneOutput.setEffectParam(dlyType, 'feedback', val);
       }));
 
@@ -160,19 +160,19 @@ export class OutputPanel {
     if (eq3Fx) {
       body.appendChild(this._createDivider('EQ'));
 
-      body.appendChild(this._createRangeRow('Low', -12, 12, 0.5, eq3Fx.options.low || 0, (val) => {
+      body.appendChild(this._createRangeRow('Low', -12, 12, 0.5, eq3Fx.options.low ?? 0, (val) => {
         this.toneOutput.setEffectParam('EQ3', 'low', val);
       }));
-      body.appendChild(this._createRangeRow('Mid', -12, 12, 0.5, eq3Fx.options.mid || 0, (val) => {
+      body.appendChild(this._createRangeRow('Mid', -12, 12, 0.5, eq3Fx.options.mid ?? 0, (val) => {
         this.toneOutput.setEffectParam('EQ3', 'mid', val);
       }));
-      body.appendChild(this._createRangeRow('High', -12, 12, 0.5, eq3Fx.options.high || 0, (val) => {
+      body.appendChild(this._createRangeRow('High', -12, 12, 0.5, eq3Fx.options.high ?? 0, (val) => {
         this.toneOutput.setEffectParam('EQ3', 'high', val);
       }));
-      body.appendChild(this._createRangeRow('Low Freq', 100, 1000, 10, eq3Fx.options.lowFrequency || 400, (val) => {
+      body.appendChild(this._createRangeRow('Low Freq', 100, 1000, 10, eq3Fx.options.lowFrequency ?? 400, (val) => {
         this.toneOutput.setEffectParam('EQ3', 'lowFrequency', val);
       }));
-      body.appendChild(this._createRangeRow('High Freq', 1000, 8000, 50, eq3Fx.options.highFrequency || 2500, (val) => {
+      body.appendChild(this._createRangeRow('High Freq', 1000, 8000, 50, eq3Fx.options.highFrequency ?? 2500, (val) => {
         this.toneOutput.setEffectParam('EQ3', 'highFrequency', val);
       }));
     }

@@ -140,10 +140,44 @@ body.ui-hidden #panel-toggle {
 
 .start-subtitle {
   margin-top: 16px;
+  max-width: 34em;
+  padding: 0 16px;
+  text-align: center;
   font-size: 11px;
   letter-spacing: 4px;
   text-transform: uppercase;
-  color: #666688;
+  color: #8888aa;
+}
+
+/* Failure: no spinner or bar, just a readable message and a Reload button */
+#start-overlay.error #loader-ring,
+#start-overlay.error #loader-bar-wrap,
+#start-overlay.error #start-button { display: none; }
+
+#start-overlay.error .start-subtitle {
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-transform: none;
+  line-height: 1.6;
+  color: #ccccdd;
+}
+
+.reload-button {
+  margin-top: 20px;
+  padding: 10px 28px;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #00ffff;
+  background: transparent;
+  border: 1px solid #00ffff66;
+  cursor: pointer;
+}
+
+.reload-button:hover {
+  background: #00ffff11;
+  border-color: #00ffff;
 }
 
 /* ── Home Button ──────────────────────────────────────────────── */
@@ -399,7 +433,15 @@ body.ui-hidden #panel-toggle {
 }
 
 #config-panel.collapsed {
-  transform: translateX(300px);
+  transform: translateX(100%);
+}
+
+/* Phones: the panel starts collapsed and never runs wider than the screen */
+@media (max-width: 700px) {
+  #config-panel {
+    width: min(300px, 100vw);
+    height: 100dvh;
+  }
 }
 
 #panel-toggle {
@@ -711,6 +753,14 @@ input[type="number"]:focus {
 }
 
 /* ── Buttons ──────────────────────────────────────────────────── */
+
+/* Helper and status text under a group of controls */
+.panel-note {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #9a9ab8;
+}
 
 .btn {
   padding: 6px 16px;

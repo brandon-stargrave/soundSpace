@@ -408,13 +408,18 @@ export class HarmonicOrbit {
     const bassMidi = this._midiFor(rootName, bassOct, 0);
     const bassFreq = Tone.Frequency(bassMidi, 'midi').toFrequency();
 
+    this._currentMidiPad = padMidi;
+    this._currentMidiBass = [bassMidi];
+
+    // While muted or paused the notes are only remembered; setSilenced(false)
+    // holds them again
+    if (this._silenced) return;
+
     // Drive local synths
     if (this._pad) this._pad.hold(padFreqs);
     if (this._bass) this._bass.hold([bassFreq]);
 
     // Drive MIDI/OSC outputs if enabled
-    this._currentMidiPad = padMidi;
-    this._currentMidiBass = [bassMidi];
     this._sendExternal(rootName, padMidi, padFreqs, bassMidi, bassFreq);
   }
 
@@ -770,6 +775,8 @@ export class HarmonicOrbit {
         if (!value && this.engine.midiOutput?.releaseHarmonic && this.params.midiEnabled) {
           this.engine.midiOutput.releaseHarmonic('pad');
         }
+        // Disabling released the held chord; bring it back now rather than at the next transpose
+        if (value && this.params.enabled) this._resendExternal();
         break;
       case 'padVolume':
         if (this._pad) this._pad.setVolume(value);
@@ -779,6 +786,7 @@ export class HarmonicOrbit {
         if (!value && this.engine.midiOutput?.releaseHarmonic && this.params.midiEnabled) {
           this.engine.midiOutput.releaseHarmonic('bass');
         }
+        if (value && this.params.enabled) this._resendExternal();
         break;
       case 'bassVolume':
         if (this._bass) this._bass.setVolume(value);

@@ -14,6 +14,8 @@ import { createSoftParticleMaterial } from './SoftParticleMaterial.js';
 const _viewSize = new THREE.Vector2();
 const _worldOrigin = new THREE.Vector3();
 
+const MAX_SHOOTING_STARS = 4;
+
 export class SceneManager {
   constructor(containerEl) {
     this.container = containerEl;
@@ -331,7 +333,8 @@ export class SceneManager {
   /** Spawn a shooting star — a bright diffraction star that orbits once then vanishes */
   spawnShootingStar() {
     const tex = this._spikeTexture;
-    if (!tex) return;
+    // Each star is a few hundred sprites over its lifetime; cap how many fly at once
+    if (!tex || this._shootingStars.length >= MAX_SHOOTING_STARS) return;
 
     const palette = [
       [0x99ccff, 0xffbb88, 0xffffff, 0xddaaff, 0xaaeeff],

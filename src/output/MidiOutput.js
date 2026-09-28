@@ -10,6 +10,7 @@ export class MidiOutput {
   constructor() {
     this.enabled = false;
     this.muted = false;
+    this.status = 'idle';     // 'idle' | 'ready' | 'unsupported' | 'denied'
     this.access = null;
     this.selectedOutput = null;
     this.availableOutputs = [];
@@ -27,16 +28,21 @@ export class MidiOutput {
     this._usedChannels = new Set();          // 0-based channels this session has sent notes on
   }
 
-  /** Initialize Web MIDI access */
+  /**
+   * Request Web MIDI access. Browsers show a permission prompt for this, so
+   * it's only called when the user turns MIDI on. Sets `status` to 'ready',
+   * 'unsupported' or 'denied', and can be called again after a denial.
+   */
   async init() {
     if (this.access) return true;
     if (!navigator.requestMIDIAccess) {
-      console.warn('MidiOutput: Web MIDI API not available');
+      this.status = 'unsupported';
       return false;
     }
 
     try {
       this.access = await navigator.requestMIDIAccess();
+      this.status = 'ready';
       this._refreshOutputs();
 
       this.access.onstatechange = () => {
@@ -50,6 +56,7 @@ export class MidiOutput {
       return true;
     } catch (e) {
       console.warn('MidiOutput: MIDI access denied', e);
+      this.status = 'denied';
       return false;
     }
   }

@@ -236,8 +236,8 @@ export class HarmonicOrbitPanel {
     sum.style.cssText = 'font-size: 10px; color: #99aadd; cursor: pointer;';
     wrap.appendChild(sum);
 
-    // Wet always available
-    if (fx.wet !== undefined) {
+    // Filter and EQ have no wet/dry mix, so a Wet slider would do nothing
+    if (fx.wet !== undefined && fx.type !== 'Filter' && fx.type !== 'EQ3') {
       wrap.appendChild(this._createRangeRow('Wet', 0, 1, 0.01, fx.wet, (v) => setter('wet', v)));
     }
 

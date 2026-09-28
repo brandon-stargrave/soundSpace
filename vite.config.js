@@ -1,10 +1,33 @@
 import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+
+/** Ship the license notices with the built site, as the MIT terms of the bundled code require. */
+function licenseNotices() {
+  return {
+    name: 'license-notices',
+    apply: 'build',
+    generateBundle() {
+      for (const [source, fileName] of [
+        ['LICENSE', 'LICENSE.txt'],
+        ['THIRD_PARTY_LICENSES.md', 'THIRD_PARTY_LICENSES.txt'],
+      ]) {
+        this.emitFile({ type: 'asset', fileName, source: readFileSync(source, 'utf8') });
+      }
+    },
+  };
+}
 
 // Serves from the site root. The GitHub Pages workflow builds with
 // --base=/soundSpace/ so local builds, `vite preview`, and server.js all work.
 export default defineConfig({
   root: '.',
   publicDir: 'public',
+  plugins: [licenseNotices()],
+  // The ffmpeg wrapper creates its worker with new URL('./worker.js', import.meta.url),
+  // which dependency pre-bundling would break in `npm run dev`
+  optimizeDeps: {
+    exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+  },
   build: {
     outDir: 'dist',
     sourcemap: true,

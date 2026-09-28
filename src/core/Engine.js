@@ -17,6 +17,28 @@ const _tmpUp = new THREE.Vector3();
 
 const MAX_ORBITS = 5;
 
+// Notes are triggered from the render loop the moment they happen. Tone's
+// default 100 ms scheduling look-ahead would make every note sound that much
+// after its visual flash (and after MIDI/OSC, which send immediately).
+const AUDIO_LOOKAHEAD_SECONDS = 0.01;
+
+// Mute fades rather than cuts, so tails and drones stop without a click
+const MUTE_FADE_SECONDS = 0.03;
+
+// Master soft clipper: linear up to CLIP_KNEE, then eases toward CLIP_CEILING
+// (about -0.5 dBFS). The waveshaper's input is scaled down by
+// CLIP_INPUT_RANGE so overshoots up to +12 dB still land on the smooth curve.
+const CLIP_KNEE = 0.7;
+const CLIP_CEILING = 0.944;
+const CLIP_INPUT_RANGE = 4;
+
+function softClip(x) {
+  const a = Math.abs(x);
+  if (a <= CLIP_KNEE) return x;
+  const room = CLIP_CEILING - CLIP_KNEE;
+  return Math.sign(x) * (CLIP_KNEE + room * Math.tanh((a - CLIP_KNEE) / room));
+}
+
 /**
  * Main engine: coordinates the render loop, generators, and output routing.
  * Manages shared resources (nebula, scene) and per-orbit audio chains.
@@ -50,6 +72,9 @@ export class Engine {
     this._rafId = null;
     this._audioInitialized = false;
     this._audioInitPromise = null;
+    this._toneStarted = false;
+    this.masterVolume = 0.8;       // 0..1, listener preference (not saved in presets)
+    this._masterGate = null;       // mute gain at the end of the master bus
 
     this._onVisibilityChange = this._handleVisibilityChange.bind(this);
     document.addEventListener('visibilitychange', this._onVisibilityChange);
@@ -68,6 +93,16 @@ export class Engine {
         gen._toneOutput.setSpatialEnabled(this.spatialEnabled);
       }
     }
+    // _updateListener stops tracking the camera; put the listener back at the
+    // origin so any panner still in use hears the mix at full level
+    if (!this.spatialEnabled && this._toneStarted) this._resetListener();
+  }
+
+  _resetListener() {
+    const L = Tone.Listener;
+    L.positionX.value = 0; L.positionY.value = 0; L.positionZ.value = 0;
+    L.forwardX.value = 0; L.forwardY.value = 0; L.forwardZ.value = -1;
+    L.upX.value = 0; L.upY.value = 1; L.upZ.value = 0;
   }
 
   /**
@@ -110,6 +145,7 @@ export class Engine {
    * a single attempt.
    */
   initAudio() {
+    this._installAudioResume();
     if (!this._audioInitPromise) {
       this._audioInitPromise = this._initAudio().catch((e) => {
         this._audioInitPromise = null;
@@ -121,17 +157,111 @@ export class Engine {
 
   async _initAudio() {
     await Tone.start();
-    // Orbits created before audio was available still need their synth chains
+    if (!this._toneStarted) {
+      Tone.getContext().lookAhead = AUDIO_LOOKAHEAD_SECONDS;
+      this._setupMasterBus();
+      this._toneStarted = true;
+    }
+    // Orbits created before audio was available still need their synth chains.
+    // Orbits added from here on build theirs as they're created (_toneStarted).
     for (const gen of this.generators) {
       if (gen._toneOutput && !gen._toneOutput._initialized) {
         await gen._toneOutput.init();
       }
     }
-    await this.midiOutput.init();
-    // OSC connects on demand when enabled, not at init
+    // MIDI is requested only when the user turns it on (MidiOscPanel), so
+    // visitors aren't asked for device access they never wanted.
+    // OSC connects on demand when enabled, not at init.
     this._audioInitialized = true;
     if (this.harmonicOrbit) {
       await this.harmonicOrbit.initAudio();
+    }
+  }
+
+  /**
+   * Master bus on Tone's Destination: a gentle compressor and a limiter just
+   * under full scale give dense scenes headroom, and a gain at the end does
+   * the mute. Recordings tap Destination's output, so they get the same mix.
+   */
+  _setupMasterBus() {
+    this._masterComp = new Tone.Compressor({ threshold: -20, ratio: 3, knee: 12, attack: 0.008, release: 0.2 });
+    this._masterMakeup = new Tone.Gain(Tone.dbToGain(4));
+    this._masterLimiter = new Tone.Limiter(-1);
+    // Tone's Limiter is a fast compressor, so a burst of simultaneous attacks
+    // still overshoots it. A soft clipper is the hard ceiling behind it.
+    this._masterClipDrive = new Tone.Gain(1 / CLIP_INPUT_RANGE);
+    this._masterClip = new Tone.WaveShaper(x => softClip(x * CLIP_INPUT_RANGE), 4096);
+    this._masterClip.oversample = '2x';
+    this._masterGate = new Tone.Gain(this._outputSilenced() ? 0 : 1);
+    Tone.getDestination().chain(
+      this._masterComp, this._masterMakeup, this._masterLimiter,
+      this._masterClipDrive, this._masterClip, this._masterGate,
+    );
+    Tone.getDestination().volume.value = Tone.gainToDb(this.masterVolume);
+  }
+
+  /** Master output level, 0..1. */
+  setMasterVolume(v) {
+    this.masterVolume = Math.max(0, Math.min(1, v));
+    if (this._toneStarted) {
+      Tone.getDestination().volume.rampTo(this.masterVolume > 0 ? Tone.gainToDb(this.masterVolume) : -Infinity, 0.05);
+    }
+  }
+
+  /**
+   * Browsers suspend or interrupt audio (iOS calls, backgrounding, a first
+   * attempt outside a gesture). Retry on the next user gesture, or when the
+   * page becomes visible again. pointerup/touchend/keydown count as user
+   * activation; a touch pointerdown does not.
+   */
+  _installAudioResume() {
+    if (this._audioResumeHandler) return;
+    this._audioResumeHandler = () => {
+      if (!this._audioInitialized) {
+        this.initAudio().catch(() => {});
+      } else if (Tone.getContext().state !== 'running') {
+        Tone.start().catch(() => {});
+      }
+    };
+    this._audioVisibleHandler = () => {
+      if (!document.hidden && this._toneStarted && Tone.getContext().state !== 'running') {
+        Tone.start().catch(() => {});
+      }
+    };
+    for (const type of ['pointerup', 'touchend', 'keydown']) {
+      window.addEventListener(type, this._audioResumeHandler, true);
+    }
+    document.addEventListener('visibilitychange', this._audioVisibleHandler);
+    window.addEventListener('pageshow', this._audioVisibleHandler);
+  }
+
+  _removeAudioResume() {
+    if (!this._audioResumeHandler) return;
+    for (const type of ['pointerup', 'touchend', 'keydown']) {
+      window.removeEventListener(type, this._audioResumeHandler, true);
+    }
+    document.removeEventListener('visibilitychange', this._audioVisibleHandler);
+    window.removeEventListener('pageshow', this._audioVisibleHandler);
+    this._audioResumeHandler = null;
+  }
+
+  /** True while the global mute or tab-hidden mute silences the output. */
+  _outputSilenced() {
+    return this.muted || this._defocusMuted;
+  }
+
+  /** Push the current mute/pause/defocus state to every output. */
+  _applyOutputGates() {
+    const silenced = this._outputSilenced();
+    for (const gen of this.generators) {
+      if (gen._toneOutput) gen._toneOutput.enabled = !silenced;
+    }
+    this.midiOutput.muted = this.muted;
+    this.oscOutput.muted = this.muted;
+    if (this._masterGate) this._masterGate.gain.rampTo(silenced ? 0 : 1, MUTE_FADE_SECONDS);
+    // The harmonic drones are sustained, so pause silences them too
+    if (this.harmonicOrbit) {
+      this.harmonicOrbit.setSilenced(silenced || this.paused);
     }
   }
 
@@ -154,7 +284,9 @@ export class Engine {
     const quantizer = new ScaleQuantizer(scaleConfig || DEFAULT_SCALE_CONFIG);
     const router = new OutputRouter(quantizer);
     const synth = new ToneOutput(synthConfig || DEFAULT_SYNTH_CONFIG);
-    if (this._audioInitialized) {
+    // A new orbit respects the current mute, like the ones already playing
+    synth.enabled = !this._outputSilenced();
+    if (this._toneStarted) {
       await synth.init();
     }
     router.addOutput(synth);
@@ -283,28 +415,15 @@ export class Engine {
   }
 
   _handleVisibilityChange() {
-    if (!this.muteOnDefocus) return;
     if (document.hidden) {
-      // Mute on defocus (only if not already manually muted)
-      if (!this.muted) {
-        this._defocusMuted = true;
-        for (const gen of this.generators) {
-          if (gen._toneOutput) gen._toneOutput.enabled = false;
-        }
-        if (this.harmonicOrbit) this.harmonicOrbit.setSilenced(true);
-      }
+      if (!this.muteOnDefocus || this.muted) return;
+      this._defocusMuted = true;
     } else if (this._defocusMuted) {
-      // Restore on refocus (only if we were the ones who muted)
       this._defocusMuted = false;
-      if (!this.muted) {
-        for (const gen of this.generators) {
-          if (gen._toneOutput) gen._toneOutput.enabled = true;
-        }
-        if (this.harmonicOrbit) {
-          this.harmonicOrbit.setSilenced(this.paused);
-        }
-      }
+    } else {
+      return;
     }
+    this._applyOutputGates();
   }
 
   /** Start the animation/simulation loop */
@@ -329,27 +448,17 @@ export class Engine {
     if (!this.paused) {
       this._lastTime = performance.now();
     }
-    // Silence/restore the harmonic orbit's sustained drones with pause state
-    if (this.harmonicOrbit) {
-      this.harmonicOrbit.setSilenced(this.paused || this.muted || this._defocusMuted);
-    }
+    this._applyOutputGates();
     return this.paused;
   }
 
   toggleMute() {
     this.muted = !this.muted;
-    // Mute all per-orbit synths + shared outputs. MIDI/OSC keep their own
-    // enabled state; `muted` is a separate gate so unmuting restores them.
-    for (const gen of this.generators) {
-      if (gen._toneOutput) gen._toneOutput.enabled = !this.muted;
-    }
-    this.midiOutput.muted = this.muted;
-    this.oscOutput.muted = this.muted;
-    // Release/restore harmonic orbit drones — they're sustained and would
-    // otherwise keep playing through a mute.
-    if (this.harmonicOrbit) {
-      this.harmonicOrbit.setSilenced(this.muted || this.paused || this._defocusMuted);
-    }
+    // A manual mute supersedes a tab-hidden one
+    if (this.muted) this._defocusMuted = false;
+    // MIDI/OSC keep their own enabled state; `muted` is a separate gate so
+    // unmuting restores them.
+    this._applyOutputGates();
     return this.muted;
   }
 
@@ -501,6 +610,7 @@ export class Engine {
   dispose() {
     this.stop();
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    this._removeAudioResume();
     if (this.harmonicOrbit) {
       this.harmonicOrbit.dispose();
       this.harmonicOrbit = null;
