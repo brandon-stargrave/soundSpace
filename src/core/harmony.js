@@ -93,6 +93,19 @@ export function voiceChord(offsets, tonicMidi, center) {
   return best;
 }
 
+/**
+ * Voice a chord near the previous one, but aim no further than `drift`
+ * semitones from the register the tonic sets (around its fifth). Without the
+ * limit, a progression that keeps moving one way (the circle of fifths)
+ * carries the chord an octave away from where it was set.
+ * @param {number|null} previousCenter - average pitch of the last chord, or null
+ */
+export function voiceChordInRegister(offsets, tonicMidi, previousCenter, drift = 4) {
+  const anchor = tonicMidi + 7;
+  const center = Math.max(anchor - drift, Math.min(anchor + drift, previousCenter ?? anchor));
+  return voiceChord(offsets, tonicMidi, center);
+}
+
 /** The bass note for a chord root, within a fourth or fifth of the key's bass tonic. */
 export function bassNote(tonicMidi, rootOffset) {
   return tonicMidi + nearestOffset(rootOffset);

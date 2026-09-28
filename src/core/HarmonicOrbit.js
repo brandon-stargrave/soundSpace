@@ -16,12 +16,14 @@ import {
   DEFAULT_SCALE_CONFIG,
 } from '../util/constants.js';
 import { angleDelta } from '../util/math.js';
-import { parentScale, hasFlatSeven, isMinorKey, diatonicChord, chordRoot, voiceChord, bassNote, nearestOffset } from './harmony.js';
+import { parentScale, hasFlatSeven, isMinorKey, diatonicChord, chordRoot, voiceChordInRegister, bassNote, nearestOffset } from './harmony.js';
 
 const TWO_PI = Math.PI * 2;
 
 const PAD_TRIM_DB = 2;
 const BASS_TRIM_DB = -18;
+// How far (semitones) the pad's voice-leading may wander from its octave
+const PAD_DRIFT = 4;
 
 // Scratch objects for the holo trail's per-instance updates
 const _holoMatrix = new THREE.Matrix4();
@@ -423,8 +425,7 @@ export class HarmonicOrbit {
 
     const padTonic = (this.params.padOctave + 1) * 12 + tonic;
     const chord = diatonicChord(parent, this._degree, this.params.chordVoicing);
-    const center = this._padCenter ?? padTonic + 7;
-    const padMidi = voiceChord(chord, padTonic, center);
+    const padMidi = voiceChordInRegister(chord, padTonic, this._padCenter, PAD_DRIFT);
     this._padCenter = padMidi.reduce((a, b) => a + b, 0) / padMidi.length;
 
     const bassTonic = (this.params.bassOctave + 1) * 12 + tonic;

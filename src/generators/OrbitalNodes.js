@@ -87,6 +87,7 @@ export class OrbitalNodes extends Generator {
     const now = performance.now();
     this._scenePulse = 0;
     for (let s = 0; s < steps; s++) this._simulate(h, now);
+    this.outputRouter.flush();
     if (this._scenePulse > 0) {
       this.sceneManager.triggerStarTwinkle(this._scenePulse * 0.6);
       this.sceneManager.triggerChromaticAberration(this._scenePulse * 0.4);

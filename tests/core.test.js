@@ -3,9 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { countPasses, circularMidpoint, euclideanPattern } from '../src/util/math.js';
-import { parentScale, diatonicChord, voiceChord, nearestOffset, bassNote, hasFlatSeven } from '../src/core/harmony.js';
+import { parentScale, diatonicChord, voiceChord, voiceChordInRegister, nearestOffset, bassNote, hasFlatSeven } from '../src/core/harmony.js';
 import { ProgressionWalker } from '../src/core/ProgressionWalker.js';
 import { ScaleQuantizer } from '../src/core/ScaleQuantizer.js';
+import { OutputRouter } from '../src/core/OutputRouter.js';
 import { SCALES, NOTE_NAMES } from '../src/util/constants.js';
 import { NodeCollision } from '../src/generators/triggers/NodeCollision.js';
 import { HarmonicRatios } from '../src/generators/motion/HarmonicRatios.js';
@@ -78,6 +79,47 @@ test('voiceChord keeps chords near the previous one', () => {
     prevMean = mean;
     center = mean;
   }
+});
+
+test('a circle-of-fifths walk keeps the pad near its octave', () => {
+  const parent = parentScale(SCALES.major);
+  let center = null, key = 0, lowest = Infinity, highest = -Infinity, biggestMove = 0;
+  for (let step = 0; step < 48; step++) {
+    const padTonic = 60 + nearestOffset(key);
+    const notes = voiceChordInRegister(diatonicChord(parent, 0, 'triad'), padTonic, center);
+    const mean = notes.reduce((a, b) => a + b, 0) / notes.length;
+    if (center !== null) biggestMove = Math.max(biggestMove, Math.abs(mean - center));
+    center = mean;
+    lowest = Math.min(lowest, notes[0]);
+    highest = Math.max(highest, notes[notes.length - 1]);
+    key = (key + 7) % 12;
+  }
+  // Voiced without the register limit, this walk ends up an octave lower (bottom note ~48)
+  assert.ok(lowest >= 57 && highest <= 79, `pad stayed in ${lowest}-${highest}`);
+  assert.ok(biggestMove <= 4, 'chords still move smoothly');
+});
+
+test('OutputRouter plays one note per pitch per frame, at the loudest velocity', () => {
+  const quantizer = { quantize: (raw) => ({ midiNote: Math.round(raw * 100), frequency: 440 }) };
+  const router = new OutputRouter(quantizer);
+  const synth = { enabled: true, got: [], send(ev, q) { this.got.push([q.midiNote, ev.velocity]); } };
+  const osc = { enabled: true, everyEvent: true, got: [], send(ev, q) { this.got.push([q.midiNote, ev.velocity]); } };
+  router.addOutput(synth);
+  router.addOutput(osc);
+  for (const [raw, velocity] of [[0.7, 0.2], [0.7, 0.9], [0.5, 0.4], [0.7, 0.5]]) {
+    router.route({ rawValue: raw, velocity });
+  }
+  assert.equal(synth.got.length, 0, 'held until the end of the frame');
+  assert.equal(osc.got.length, 4, 'OSC hears every trigger right away');
+  router.flush();
+  assert.deepEqual(synth.got, [[70, 0.9], [50, 0.4]]);
+  router.flush();
+  assert.equal(synth.got.length, 2, 'a frame is only played once');
+  router.isAudible = () => false;
+  router.route({ rawValue: 0.3, velocity: 1 });
+  router.flush();
+  assert.equal(synth.got.length, 2, 'a muted orbit sends nothing');
+  assert.equal(osc.got.length, 4);
 });
 
 test('key changes take the nearest direction', () => {

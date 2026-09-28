@@ -9,6 +9,8 @@ export class OscOutput {
   constructor() {
     this.enabled = false;
     this.muted = false;
+    // Every trigger, including same-pitch ones in one frame: each names its node
+    this.everyEvent = true;
     this.ws = null;
     this.status = 'off';
     this.onStatus = null;
