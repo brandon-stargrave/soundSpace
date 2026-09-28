@@ -754,6 +754,34 @@ input[type="number"]:focus {
 
 /* ── Buttons ──────────────────────────────────────────────────── */
 
+/* ── Record ───────────────────────────────────────────────────── */
+
+.record-btn {
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px;
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+
+.record-btn.recording {
+  color: #ff5c8a;
+  border-color: rgba(255, 60, 110, 0.5);
+  background: rgba(255, 60, 110, 0.1);
+  animation: record-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  50% { background: rgba(255, 60, 110, 0.2); }
+}
+
+.record-status {
+  margin-top: 8px;
+  min-height: 14px;
+  font-size: 10px;
+  color: #88aacc;
+}
+
 /* Helper and status text under a group of controls */
 .panel-note {
   margin-top: 6px;

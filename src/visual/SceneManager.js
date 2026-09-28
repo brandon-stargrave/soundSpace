@@ -670,7 +670,22 @@ export class SceneManager {
       this._applyCanvasDisplaySize();
       return;
     }
+    // While recording, the pixel buffer keeps the size the take started with
+    if (this._captureLock) return;
     this._applyResolution(window.innerWidth, window.innerHeight, true);
+  }
+
+  /** Hold the current pixel-buffer size (a recording is running), or follow the window again. */
+  setCaptureLock(locked) {
+    this._captureLock = !!locked;
+    if (!locked && !this._manualResolution) this._handleResize();
+  }
+
+  /** Largest width or height the GPU can render to. */
+  maxRenderSize() {
+    const gl = this.renderer.getContext();
+    const dims = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+    return Math.min(this.renderer.capabilities.maxTextureSize, gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), dims[0], dims[1]);
   }
 
   /**
@@ -687,6 +702,10 @@ export class SceneManager {
       this._clearCanvasDisplaySize();
       return;
     }
+    // Clamp to what the GPU can render, and keep both sides even for video encoders
+    const max = this.maxRenderSize();
+    w = Math.max(2, Math.min(max, Math.round(w / 2) * 2));
+    h = Math.max(2, Math.min(max, Math.round(h / 2) * 2));
     this._manualResolution = { w, h };
     this._applyResolution(w, h, false);
     this._applyCanvasDisplaySize();

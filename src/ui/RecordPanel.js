@@ -95,6 +95,7 @@ export class RecordPanel {
     this._customWidthInput.max = '7680';
     this._customWidthInput.step = '2';
     this._customWidthInput.value = '1920';
+    this._customWidthInput.setAttribute('aria-label', 'Custom width in pixels');
     this._customWidthInput.style.cssText = 'flex: 1; padding: 3px 6px; font-family: inherit; font-size: 11px; color: #ccccdd; background: rgba(255,255,255,0.06); border: 1px solid rgba(0,255,255,0.15); border-radius: 3px; outline: none;';
     this._customHeightInput = document.createElement('input');
     this._customHeightInput.type = 'number';
@@ -102,7 +103,11 @@ export class RecordPanel {
     this._customHeightInput.max = '4320';
     this._customHeightInput.step = '2';
     this._customHeightInput.value = '1080';
+    this._customHeightInput.setAttribute('aria-label', 'Custom height in pixels');
     this._customHeightInput.style.cssText = this._customWidthInput.style.cssText;
+    for (const input of [this._customWidthInput, this._customHeightInput]) {
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') this._applyCustomResolution(); });
+    }
     customInputWrap.appendChild(this._customWidthInput);
     customInputWrap.appendChild(this._customHeightInput);
     this._customRow.appendChild(customInputWrap);
@@ -126,10 +131,11 @@ export class RecordPanel {
     // ─── Recording ────────────────────────────────────────────────
     body.appendChild(this._createDivider('Recording'));
 
+    this._formats = Recorder.formats();
     this._formatSelect = this._createSelectRow(
       'Format',
-      ['Compressed MP4 (H.264)', 'ProRes 4444 MOV'],
-      'Compressed MP4 (H.264)',
+      this._formats.map(f => f.label),
+      this._formats[0].label,
       () => this._updateIdleStatus()
     );
     body.appendChild(this._formatSelect);
@@ -146,21 +152,29 @@ export class RecordPanel {
     this._toggleBtn = document.createElement('button');
     this._toggleBtn.className = 'btn record-btn';
     this._toggleBtn.textContent = '● Record';
-    this._toggleBtn.style.cssText = 'margin-top: 8px; width: 100%; padding: 8px; font-size: 13px; letter-spacing: 1px;';
     this._toggleBtn.addEventListener('click', () => this._onToggle());
     body.appendChild(this._toggleBtn);
 
+    // Cancel, shown while a conversion runs
+    this._cancelBtn = document.createElement('button');
+    this._cancelBtn.className = 'btn';
+    this._cancelBtn.textContent = 'Cancel conversion';
+    this._cancelBtn.hidden = true;
+    this._cancelBtn.style.cssText = 'margin-top: 6px; width: 100%;';
+    this._cancelBtn.addEventListener('click', () => this.recorder.cancelEncoding());
+    body.appendChild(this._cancelBtn);
+
     // Status line
     this._statusLine = document.createElement('div');
-    this._statusLine.style.cssText = 'font-size: 10px; color: #88aacc; margin-top: 8px; min-height: 14px;';
+    this._statusLine.className = 'record-status';
+    this._statusLine.setAttribute('role', 'status');
     body.appendChild(this._statusLine);
 
-    // Performance-note + ffmpeg-load-note hint
     const note = document.createElement('div');
-    note.style.cssText = 'font-size: 9px; color: #556; margin-top: 6px; line-height: 1.4;';
-    note.innerHTML =
-      'High resolutions (4K) may reduce live framerate while recording.<br>' +
-      'First recording downloads the encoder (~30 MB, one time).';
+    note.className = 'panel-note';
+    note.textContent = this._formats[0].native
+      ? 'Records MP4 directly. High resolutions (4K) may lower the frame rate while recording. Recording pauses while the tab is hidden.'
+      : 'This browser records WebM, so MP4 is converted after you stop. The first conversion downloads a ~32 MB encoder. Recording pauses while the tab is hidden.';
     body.appendChild(note);
 
     section.appendChild(body);
@@ -214,13 +228,32 @@ export class RecordPanel {
     const h = parseInt(this._customHeightInput.value, 10);
     if (!Number.isFinite(w) || !Number.isFinite(h) || w < 64 || h < 64) return;
     this.sceneManager.setViewportResolution(w, h);
+    // Show what was actually applied (rounded to even, clamped to the GPU's limit)
+    const applied = this.sceneManager._manualResolution;
+    if (applied) {
+      this._customWidthInput.value = String(applied.w);
+      this._customHeightInput.value = String(applied.h);
+    }
     this._updateIdleStatus();
+  }
+
+  /** Resolution, format and frame rate can't change once a take has started. */
+  _setBusy(busy) {
+    for (const row of [this._resPresetSelect, this._orientationRow, this._formatSelect, this._fpsSelect]) {
+      const select = row.querySelector('select');
+      if (select) select.disabled = busy;
+    }
+    this._customWidthInput.disabled = busy;
+    this._customHeightInput.disabled = busy;
+    this._customApplyRow.querySelector('button').disabled = busy;
   }
 
   async _onToggle() {
     if (this.recorder.isEncoding) return; // can't act while encoding
     if (this.recorder.isRecording) {
       this._toggleBtn.disabled = true;
+      this._toggleBtn.classList.remove('recording');
+      this._toggleBtn.textContent = 'Saving…';
       try {
         await this.recorder.stop();
       } catch (e) {
@@ -229,16 +262,18 @@ export class RecordPanel {
       } finally {
         this._toggleBtn.disabled = false;
         this._toggleBtn.textContent = '● Record';
-        this._toggleBtn.classList.remove('recording');
+        this._cancelBtn.hidden = true;
+        this._setBusy(false);
       }
     } else {
       const formatLabel = this._getSelectValue(this._formatSelect);
-      const format = formatLabel.startsWith('ProRes') ? 'mov' : 'mp4';
+      const format = this._formats.find(f => f.label === formatLabel)?.id || 'mp4';
       const fps = parseInt(this._getSelectValue(this._fpsSelect), 10) || 60;
       try {
         await this.recorder.start({ format, fps });
         this._toggleBtn.textContent = '■ Stop';
         this._toggleBtn.classList.add('recording');
+        this._setBusy(true);
       } catch (e) {
         console.error('Recorder.start failed:', e);
         this._statusLine.textContent = 'Error: ' + (e.message || e);
@@ -246,11 +281,13 @@ export class RecordPanel {
     }
   }
 
-  _onStatus({ state, elapsedSec, message }) {
+  _onStatus({ state, elapsedSec, bytes, paused, message }) {
+    this._cancelBtn.hidden = state !== 'encoding';
     if (state === 'recording') {
       const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
       const ss = String(Math.floor(elapsedSec % 60)).padStart(2, '0');
-      this._statusLine.textContent = `Recording ${mm}:${ss}`;
+      const mb = (bytes / (1024 * 1024)).toFixed(1);
+      this._statusLine.textContent = `${paused ? 'Paused' : 'Recording'} ${mm}:${ss} · ${mb} MB`;
     } else if (state === 'encoding') {
       this._statusLine.textContent = message || 'Encoding…';
     } else if (state === 'done') {

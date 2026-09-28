@@ -31,13 +31,15 @@ These packages are compiled into the JavaScript bundle that the browser loads.
 
 | Package | Version | License |
 |---|---|---|
-| [@ffmpeg/core](https://github.com/ffmpegwasm/ffmpeg.wasm) | 0.12.6 | GPL-2.0-or-later |
+| [@ffmpeg/core](https://github.com/ffmpegwasm/ffmpeg.wasm) | 0.12.10 | GPL-2.0-or-later |
 
-The recording feature converts captures with ffmpeg.wasm. Its core is FFmpeg
-compiled to WebAssembly with libx264, and it is licensed under the GNU General
-Public License v2 or later. It is not part of this repository or the built app:
-the browser downloads it (about 30 MB) from unpkg.com the first time a recording
-is exported. Source code is available from the ffmpeg.wasm project linked above.
+In browsers that can't record MP4 themselves (such as Firefox), the recording
+feature converts captures with ffmpeg.wasm. Its core is FFmpeg compiled to
+WebAssembly with libx264, and it is licensed under the GNU General Public
+License v2 or later. It is not part of this repository or the built app: the
+browser downloads it (about 32 MB) from unpkg.com the first time a recording
+needs converting. Source code is available from the ffmpeg.wasm project linked
+above.
 
 ## License texts
 

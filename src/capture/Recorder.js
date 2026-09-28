@@ -1,23 +1,20 @@
 /**
  * Recorder — captures the canvas (video) + Tone.js master output (audio)
- * as a MediaStream, runs them through MediaRecorder for live capture, then
- * transcodes the result via ffmpeg.wasm to the user's chosen format
- * (compressed MP4 or ProRes 4444 MOV).
+ * as a MediaStream and records it with MediaRecorder.
+ *
+ * MP4 is recorded natively where the browser supports it (Chrome, Edge,
+ * Safari). Elsewhere (Firefox) the browser records WebM and ffmpeg.wasm
+ * converts it to MP4 after the take. WebM can also be kept as-is.
  *
  * Capture happens at the canvas's CURRENT pixel-buffer size. Pair with
  * SceneManager.setViewportResolution() to record at custom resolutions
  * (1080p, 4K, etc.) independent of the on-screen window size.
  *
- * High-level flow:
- *   start()  → captureStream + audio MediaStreamDestination → MediaRecorder
- *   stop()   → finalize the recording, lazy-load ffmpeg, transcode, download.
- *              When the browser already recorded the requested container, or
- *              the transcode can't complete, the original recording is
- *              downloaded instead so a take is never lost.
+ * A take is never lost: if conversion can't run, is cancelled, or fails,
+ * the original recording is downloaded instead.
  */
 
 import * as Tone from 'tone';
-import { fetchFile } from '@ffmpeg/util';
 import { getFFmpeg, resetFFmpeg } from './ffmpegLoader.js';
 
 const STATE = Object.freeze({
@@ -32,51 +29,43 @@ const STATE = Object.freeze({
 // ~2 GB wasm heap; larger captures would abort mid-encode.
 const MAX_TRANSCODE_BYTES = 700 * 1024 * 1024;
 
-// WebM for Chrome/Firefox; MP4 for Safari, whose MediaRecorder has no WebM.
-const MIME_CANDIDATES = [
-  'video/webm;codecs=vp9,opus',
-  'video/webm;codecs=vp8,opus',
-  'video/webm',
-  'video/mp4;codecs=avc1,mp4a.40.2',
-  'video/mp4',
-];
+const MP4_TYPES = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1,opus', 'video/mp4'];
+const WEBM_TYPES = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
 
-/** Pick the best container/codec MediaRecorder supports in this browser. */
-function pickMimeType() {
+function firstSupported(types) {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
-  return MIME_CANDIDATES.find(m => MediaRecorder.isTypeSupported(m)) || null;
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || null;
+}
+
+/** The recording type for a requested format: native first, the other container as a fallback. */
+function pickMimeType(format) {
+  return format === 'webm'
+    ? firstSupported(WEBM_TYPES) || firstSupported(MP4_TYPES)
+    : firstSupported(MP4_TYPES) || firstSupported(WEBM_TYPES);
 }
 
 function containerFor(mimeType) {
   return mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
 }
 
-/** Intermediate bitrate scaled by frame area — 1080p ≈ 41 Mbps, capped at 100 Mbps. */
-function pickVideoBitrate(w, h) {
-  return Math.min(100_000_000, Math.max(8_000_000, Math.floor(w * h * 0.02)));
+/** Video bitrate from pixel rate: ~0.12 bits per pixel per frame, 8–80 Mbps. */
+function pickVideoBitrate(w, h, fps) {
+  return Math.round(Math.min(80_000_000, Math.max(8_000_000, w * h * fps * 0.12)));
 }
 
-function ffmpegArgs(format, inName, outName) {
-  if (format === 'mp4') {
-    return [
-      '-i', inName,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '18',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-movflags', '+faststart',
-      outName,
-    ];
-  }
-  // ProRes 4444 — visually lossless mastering format
+/** WebM → MP4. The crop keeps dimensions even (libx264 rejects odd sizes for 4:2:0), -r makes the frame rate constant. */
+function mp4Args(inName, outName, fps) {
   return [
     '-i', inName,
-    '-c:v', 'prores_ks',
-    '-profile:v', '4',           // 4 = ProRes 4444
-    '-pix_fmt', 'yuva444p10le',  // 10-bit 4:4:4:4
-    '-c:a', 'pcm_s24le',         // uncompressed 24-bit PCM
+    '-vf', 'crop=trunc(iw/2)*2:trunc(ih/2)*2',
+    '-r', String(fps),
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '20',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-movflags', '+faststart',
     outName,
   ];
 }
@@ -91,9 +80,16 @@ function timestampForFilename() {
 export class Recorder {
   /** Whether this browser can capture the canvas at all. */
   static isSupported() {
-    return pickMimeType() !== null &&
+    return (firstSupported(MP4_TYPES) || firstSupported(WEBM_TYPES)) !== null &&
       typeof HTMLCanvasElement !== 'undefined' &&
       typeof HTMLCanvasElement.prototype.captureStream === 'function';
+  }
+
+  /** Export formats this browser can offer: MP4 always (native or converted), WebM when it records WebM. */
+  static formats() {
+    const formats = [{ id: 'mp4', label: 'MP4 (H.264)', native: !!firstSupported(MP4_TYPES) }];
+    if (firstSupported(WEBM_TYPES)) formats.push({ id: 'webm', label: 'WebM (no conversion)', native: true });
+    return formats;
   }
 
   constructor(sceneManager, engine) {
@@ -102,20 +98,31 @@ export class Recorder {
 
     this.state = STATE.IDLE;
     this.elapsedSec = 0;
+    this.bytesRecorded = 0;
     this.lastFile = null; // {name, size, note}
 
     this._statusCb = null;
     this._mediaRecorder = null;
+    this._mimeType = null;
     this._chunks = [];
     this._audioDest = null;       // MediaStreamAudioDestinationNode
     this._stream = null;          // combined MediaStream
     this._tickInterval = null;
-    this._startTime = 0;
-    this._priorMuteOnDefocus = null;
-    this._format = null;
+    this._format = 'mp4';
     this._fps = 60;
     this._captureWidth = 0;
     this._captureHeight = 0;
+    this._activeSec = 0;          // recorded time before the current segment (pauses excluded)
+    this._segmentStart = 0;
+    this._cancelRequested = false;
+
+    this._onVisibility = () => this._handleVisibility();
+    this._onBeforeUnload = (e) => {
+      if (this.isRecording || this.isEncoding) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
   }
 
   /** Whether a recording is currently in progress (capture phase). */
@@ -123,7 +130,7 @@ export class Recorder {
   /** Whether the post-capture encoding phase is currently running. */
   get isEncoding() { return this.state === STATE.ENCODING; }
 
-  /** Subscribe to status updates. Callback receives `{state, elapsedSec, message?}`. */
+  /** Subscribe to status updates. Callback receives `{state, elapsedSec, bytes, message?}`. */
   setStatusCallback(fn) { this._statusCb = fn; }
 
   _emit(message) {
@@ -131,6 +138,8 @@ export class Recorder {
       this._statusCb({
         state: this.state,
         elapsedSec: this.elapsedSec,
+        bytes: this.bytesRecorded,
+        paused: this._mediaRecorder?.state === 'paused',
         message,
       });
     }
@@ -139,7 +148,7 @@ export class Recorder {
   /**
    * Begin capturing. Resolves immediately once recording is live; the actual
    * stop+encode happens in stop().
-   * @param {{ format: 'mp4'|'mov', fps: number }} opts
+   * @param {{ format: 'mp4'|'webm', fps: number }} opts
    */
   async start(opts = {}) {
     if (this.state === STATE.RECORDING || this.state === STATE.ENCODING) {
@@ -148,10 +157,13 @@ export class Recorder {
     if (!Recorder.isSupported()) {
       throw new Error('Recording is not supported in this browser');
     }
-    this._format = opts.format === 'mov' ? 'mov' : 'mp4';
+    this._format = opts.format === 'webm' ? 'webm' : 'mp4';
     this._fps = opts.fps || 60;
+    this._mimeType = pickMimeType(this._format);
 
     const canvas = this.sceneManager.renderer.domElement;
+    // A take keeps one size: window resizes and fullscreen don't change it
+    this.sceneManager.setCaptureLock(true);
     this._captureWidth = canvas.width;
     this._captureHeight = canvas.height;
 
@@ -170,15 +182,24 @@ export class Recorder {
       const audioTrack = this._audioDest.stream.getAudioTracks()[0];
       if (audioTrack) this._stream.addTrack(audioTrack);
 
-      // 3) MediaRecorder with a high-bitrate intermediate.
+      // 3) MediaRecorder
       this._mediaRecorder = new MediaRecorder(this._stream, {
-        mimeType: pickMimeType(),
-        videoBitsPerSecond: pickVideoBitrate(this._captureWidth, this._captureHeight),
+        mimeType: this._mimeType,
+        videoBitsPerSecond: pickVideoBitrate(this._captureWidth, this._captureHeight, this._fps),
         audioBitsPerSecond: 192_000,
       });
       this._chunks = [];
+      this.bytesRecorded = 0;
       this._mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) this._chunks.push(e.data);
+        if (e.data && e.data.size > 0) {
+          this._chunks.push(e.data);
+          this.bytesRecorded += e.data.size;
+        }
+      };
+      // The browser can end a recording on its own (e.g. the stream fails);
+      // finish the take so the user gets what was recorded
+      this._mediaRecorder.onerror = () => {
+        if (this.isRecording) this.stop().catch(err => console.error('Recorder: stop after error failed', err));
       };
 
       // 4) Start recording. Request a chunk every 500ms so we drain the
@@ -189,29 +210,49 @@ export class Recorder {
       throw e;
     }
 
-    // Suppress mute-on-defocus while recording so tab-blur doesn't kill audio.
-    if (this.engine && typeof this.engine.muteOnDefocus !== 'undefined') {
-      this._priorMuteOnDefocus = this.engine.muteOnDefocus;
-      this.engine.muteOnDefocus = false;
-    }
+    document.addEventListener('visibilitychange', this._onVisibility);
+    window.addEventListener('beforeunload', this._onBeforeUnload);
 
     this.state = STATE.RECORDING;
+    this._cancelRequested = false;
     this.elapsedSec = 0;
-    this._startTime = performance.now();
+    this._activeSec = 0;
+    this._segmentStart = performance.now();
     this._tickInterval = setInterval(() => {
-      this.elapsedSec = (performance.now() - this._startTime) / 1000;
+      if (this._mediaRecorder?.state === 'recording') {
+        this.elapsedSec = this._activeSec + (performance.now() - this._segmentStart) / 1000;
+      }
       this._emit();
     }, 250);
     this._emit('recording');
   }
 
   /**
-   * Finalize the recording: stops MediaRecorder, converts it to the target
-   * format via ffmpeg.wasm when needed, then triggers a download.
-   * Resolves with the downloaded Blob.
+   * The render loop stops while the tab is hidden, so the take would record
+   * a frozen frame. Pause instead, and pick up again when the tab returns.
+   */
+  _handleVisibility() {
+    const rec = this._mediaRecorder;
+    if (!rec || !this.isRecording) return;
+    if (document.hidden && rec.state === 'recording') {
+      rec.pause();
+      this._activeSec += (performance.now() - this._segmentStart) / 1000;
+      this._emit();
+    } else if (!document.hidden && rec.state === 'paused') {
+      rec.resume();
+      this._segmentStart = performance.now();
+      this._emit();
+    }
+  }
+
+  /**
+   * Finalize the recording: stops MediaRecorder, converts it to MP4 via
+   * ffmpeg.wasm when the browser couldn't record MP4 itself, then triggers a
+   * download. Resolves with the downloaded Blob.
    */
   async stop() {
     if (this.state !== STATE.RECORDING) return null;
+    const durationSec = this.elapsedSec;
 
     let recording;
     try {
@@ -227,25 +268,39 @@ export class Recorder {
     const container = containerFor(recording.type);
     const baseName = `soundspace_${timestampForFilename()}`;
 
-    if (container === this._format) {
-      return this._deliver(recording, `${baseName}.${container}`);
+    if (this._format === 'webm' || container === 'mp4') {
+      return this._finish(this._deliver(recording, `${baseName}.${container}`));
     }
     if (recording.size > MAX_TRANSCODE_BYTES) {
-      return this._deliver(recording, `${baseName}.${container}`,
-        'too large to convert in the browser, kept original');
+      return this._finish(this._deliver(recording, `${baseName}.${container}`,
+        'too large to convert in the browser, kept the original'));
     }
 
     this.state = STATE.ENCODING;
     this._emit('loading encoder…');
     try {
-      const converted = await this._transcode(recording, container);
-      return this._deliver(converted, `${baseName}.${this._format}`);
+      const converted = await this._transcode(recording, container, durationSec);
+      return this._finish(this._deliver(converted, `${baseName}.mp4`));
     } catch (e) {
-      console.error('Recorder: conversion failed, saving the original recording instead', e);
+      const note = this._cancelRequested ? 'conversion cancelled, kept the original' : 'conversion failed, kept the original';
+      if (!this._cancelRequested) console.error('Recorder: conversion failed, saving the original recording instead', e);
       // An aborted wasm instance (e.g. out of memory) can't be reused
       resetFFmpeg();
-      return this._deliver(recording, `${baseName}.${container}`, 'conversion failed, kept original');
+      return this._finish(this._deliver(recording, `${baseName}.${container}`, note));
     }
+  }
+
+  /** Stop a running conversion; the original recording is saved instead. */
+  cancelEncoding() {
+    if (!this.isEncoding) return;
+    this._cancelRequested = true;
+    // Terminating the worker rejects the pending load or exec
+    resetFFmpeg();
+  }
+
+  _finish(blob) {
+    window.removeEventListener('beforeunload', this._onBeforeUnload);
+    return blob;
   }
 
   /** Cancel the current recording without saving anything. */
@@ -256,38 +311,47 @@ export class Recorder {
     this._chunks = [];
     this.state = STATE.IDLE;
     this.elapsedSec = 0;
+    window.removeEventListener('beforeunload', this._onBeforeUnload);
     this._emit('aborted');
   }
 
   _flush() {
     const recorder = this._mediaRecorder;
+    const makeBlob = () => new Blob(this._chunks, { type: recorder.mimeType || this._mimeType });
+    // Already stopped by the browser: everything it recorded is in the chunks
+    if (recorder.state === 'inactive') return Promise.resolve(makeBlob());
     return new Promise((resolve, reject) => {
       recorder.onerror = (e) => reject(e.error || new Error('MediaRecorder error'));
-      recorder.onstop = () => {
-        resolve(new Blob(this._chunks, { type: recorder.mimeType || 'video/webm' }));
-      };
+      recorder.onstop = () => resolve(makeBlob());
       recorder.stop();
     });
   }
 
-  async _transcode(recording, container) {
-    const ffmpeg = await getFFmpeg(({ ratio }) => {
-      if (this.state === STATE.ENCODING && typeof ratio === 'number' && ratio >= 0 && ratio <= 1) {
-        this._emit(`encoding ${Math.round(ratio * 100)}%`);
-      }
+  async _transcode(recording, container, durationSec) {
+    const ffmpeg = await getFFmpeg((fraction) => {
+      if (this.isEncoding) this._emit(`downloading encoder ${Math.round(fraction * 100)}%`);
     });
+    if (this._cancelRequested) throw new Error('cancelled');
 
     const inName = `in.${container}`;
-    const outName = `out.${this._format}`;
-    await ffmpeg.writeFile(inName, await fetchFile(recording));
+    const outName = 'out.mp4';
+    // ffmpeg reports how far into the input it has encoded; the recording's
+    // own container often has no duration, so measure against the take length
+    const onProgress = ({ time }) => {
+      if (!this.isEncoding || !(durationSec > 0)) return;
+      const pct = Math.max(0, Math.min(99, Math.round((time / 1e6 / durationSec) * 100)));
+      this._emit(`converting to MP4 ${pct}%`);
+    };
+    ffmpeg.on('progress', onProgress);
     try {
-      this._emit('encoding 0%');
-      const exitCode = await ffmpeg.exec(ffmpegArgs(this._format, inName, outName));
+      await ffmpeg.writeFile(inName, new Uint8Array(await recording.arrayBuffer()));
+      this._emit('converting to MP4 0%');
+      const exitCode = await ffmpeg.exec(mp4Args(inName, outName, this._fps));
       if (exitCode !== 0) throw new Error(`ffmpeg exited with code ${exitCode}`);
       const data = await ffmpeg.readFile(outName);
-      const outMime = this._format === 'mp4' ? 'video/mp4' : 'video/quicktime';
-      return new Blob([data], { type: outMime });
+      return new Blob([data], { type: 'video/mp4' });
     } finally {
+      ffmpeg.off('progress', onProgress);
       try { await ffmpeg.deleteFile(inName); } catch {}
       try { await ffmpeg.deleteFile(outName); } catch {}
     }
@@ -306,6 +370,7 @@ export class Recorder {
       clearInterval(this._tickInterval);
       this._tickInterval = null;
     }
+    document.removeEventListener('visibilitychange', this._onVisibility);
     if (this._audioDest) {
       try { Tone.getDestination().disconnect(this._audioDest); } catch {}
       this._audioDest = null;
@@ -314,10 +379,7 @@ export class Recorder {
       try { this._stream.getTracks().forEach(t => t.stop()); } catch {}
       this._stream = null;
     }
-    if (this._priorMuteOnDefocus !== null && this.engine) {
-      this.engine.muteOnDefocus = this._priorMuteOnDefocus;
-      this._priorMuteOnDefocus = null;
-    }
+    this.sceneManager.setCaptureLock(false);
     this._mediaRecorder = null;
   }
 }
