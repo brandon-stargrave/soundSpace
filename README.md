@@ -361,10 +361,11 @@ src/
   visual/       Three.js scene, post-processing, particle materials
   capture/      MediaRecorder capture and ffmpeg.wasm conversion
   ui/           control panel sections, help, share links, messages
+  styles.css    the whole stylesheet (built with a content hash, like the code)
 server.js       static server and WebSocket → UDP OSC relay
 server/         the relay's OSC encoder
 presets/        the bundled example setups
-public/         styles, icons, and the social preview image
+public/         icons, the social preview image, and files served as-is
 tests/          node --test suites for the pure modules and bundled presets
 ```
 
