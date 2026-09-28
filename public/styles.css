@@ -1281,3 +1281,7 @@ input[type="range"]:focus-visible {
 .help-close {
   margin-top: 18px;
 }
+
+.preset-examples .btn {
+  padding: 4px 10px;
+}

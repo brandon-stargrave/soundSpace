@@ -29,7 +29,13 @@ const POLY_POOL_SIZE = 12;  // chord sizes up to ~5 notes × ~2 cycles headroom
 const MONO_POOL_SIZE = 4;   // bass drone rotation headroom
 
 export class AuxVoice {
-  constructor(config = {}) {
+  /**
+   * @param {object} config - synth config (saved with presets)
+   * @param {{ trimDb?: number }} [opts] - fixed level trim that balances this
+   *        voice against the others (not a user setting)
+   */
+  constructor(config = {}, { trimDb = 0 } = {}) {
+    this._trim = Math.pow(10, trimDb / 20);
     this.config = structuredClone({
       mode: 'mono',
       synthType: 'Synth',
@@ -135,7 +141,7 @@ export class AuxVoice {
   setVolume(v) {
     this._volume = Math.max(0, Math.min(1, v));
     if (this._gain) {
-      this._gain.gain.rampTo(this.enabled ? this._volume : 0, 0.05);
+      this._gain.gain.rampTo(this.enabled ? this._volume * this._trim : 0, 0.05);
     }
   }
 
@@ -145,7 +151,7 @@ export class AuxVoice {
       this.release();
     }
     if (this._gain) {
-      this._gain.gain.rampTo(this.enabled ? this._volume : 0, 0.05);
+      this._gain.gain.rampTo(this.enabled ? this._volume * this._trim : 0, 0.05);
     }
   }
 
@@ -280,7 +286,7 @@ export class AuxVoice {
       .filter(Boolean);
 
     // 2) Volume gain node at the tail
-    this._gain = new Tone.Gain(this.enabled ? this._volume : 0);
+    this._gain = new Tone.Gain(this.enabled ? this._volume * this._trim : 0);
 
     // 3) Connect effects: fx[0] → fx[1] → ... → fx[last] → gain → destination
     for (let i = 0; i < this._effects.length - 1; i++) {

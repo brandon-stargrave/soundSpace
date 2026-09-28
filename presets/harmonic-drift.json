@@ -1,0 +1,157 @@
+{
+  "app": "soundSpace",
+  "version": 2,
+  "orbits": [
+    {
+      "generator": {
+        "params": {
+          "nodeCount": 5,
+          "radius": 3,
+          "baseSpeed": 0.35,
+          "direction": "mixed",
+          "trailLength": 20,
+          "tailLength": 0.4,
+          "nodeStyle": "sphere",
+          "nodeSize": 0.15,
+          "motionAlgorithm": "phaseDrift",
+          "triggerMethod": "staticPins",
+          "noteMapping": "cumulativePhase",
+          "orbitIndex": 0
+        },
+        "motionAlgorithm": {
+          "id": "phaseDrift",
+          "params": {
+            "basePeriod": 14,
+            "driftRate": 0.006,
+            "driftCurve": "sinusoidal",
+            "stageLength": 90,
+            "realignStrength": 0.05,
+            "driftModRate": 0.01
+          }
+        },
+        "triggerMethod": {
+          "id": "staticPins",
+          "params": {
+            "pinCount": 8,
+            "pinLayout": "even",
+            "pinCooldownMs": 80
+          }
+        },
+        "noteMapping": {
+          "id": "cumulativePhase",
+          "params": {
+            "cycleLength": 3,
+            "direction": "pendulum"
+          }
+        }
+      },
+      "scale": {
+        "root": "A",
+        "scaleType": "major",
+        "octaveLow": 4,
+        "octaveHigh": 5,
+        "mappingMode": "linear"
+      },
+      "synth": {
+        "synthType": "FMSynth",
+        "noteDuration": "8n",
+        "velocityScale": 0.75,
+        "synthOptions": {
+          "harmonicity": 3,
+          "modulationIndex": 5,
+          "oscillator": {
+            "type": "sine"
+          },
+          "envelope": {
+            "attack": 0.01,
+            "decay": 0.6,
+            "sustain": 0.1,
+            "release": 1.6
+          }
+        },
+        "effects": [
+          {
+            "type": "Filter",
+            "wet": 1,
+            "options": {
+              "frequency": 3500,
+              "type": "lowpass",
+              "rolloff": -12,
+              "Q": 1
+            }
+          },
+          {
+            "type": "Chorus",
+            "wet": 0.25,
+            "options": {
+              "frequency": 1.2,
+              "delayTime": 3.5,
+              "depth": 0.6
+            }
+          },
+          {
+            "type": "Reverb",
+            "wet": 0.5,
+            "options": {
+              "decay": 5,
+              "preDelay": 0.02
+            }
+          },
+          {
+            "type": "FeedbackDelay",
+            "wet": 0.22,
+            "options": {
+              "delayTime": "4n",
+              "feedback": 0.35
+            }
+          },
+          {
+            "type": "EQ3",
+            "wet": 1,
+            "options": {
+              "low": 0,
+              "mid": 0,
+              "high": 0,
+              "lowFrequency": 400,
+              "highFrequency": 2500
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "harmonic": {
+    "params": {
+      "enabled": true,
+      "sides": 4,
+      "speedMode": "free",
+      "speedBpm": 12,
+      "progressionId": "romanPopAxis",
+      "transposeChance": 1,
+      "chordVoicing": "triad",
+      "padOctave": 4,
+      "bassOctave": 2,
+      "padEnabled": true,
+      "padVolume": 0.4,
+      "bassEnabled": true,
+      "bassVolume": 0.45
+    }
+  },
+  "camera": {
+    "position": {
+      "x": 0.593,
+      "y": -4.41,
+      "z": 3.554
+    },
+    "target": {
+      "x": 0.884,
+      "y": -0.427,
+      "z": -0.764
+    }
+  },
+  "visual": {
+    "bloomStrength": 0.5,
+    "trails": 0.35,
+    "spinSpeed": 0.015
+  }
+}

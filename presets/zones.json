@@ -1,0 +1,156 @@
+{
+  "app": "soundSpace",
+  "version": 2,
+  "orbits": [
+    {
+      "generator": {
+        "params": {
+          "nodeCount": 9,
+          "radius": 3.5,
+          "baseSpeed": 0.5,
+          "direction": "mixed",
+          "trailLength": 25,
+          "tailLength": 0.8,
+          "tailDecompose": 0.5,
+          "nodeStyle": "sphere",
+          "nodeSize": 0.12,
+          "motionAlgorithm": "goldenSpiral",
+          "triggerMethod": "zoneTriggers",
+          "noteMapping": "relativePosition",
+          "orbitIndex": 0
+        },
+        "motionAlgorithm": {
+          "id": "goldenSpiral",
+          "params": {
+            "irrationalBase": "phi",
+            "basePeriod": 20,
+            "powerSpread": 0.8,
+            "fibStructure": true,
+            "breathRate": 0.004,
+            "breathDepth": 0.2
+          }
+        },
+        "triggerMethod": {
+          "id": "zoneTriggers",
+          "params": {
+            "zoneCount": 5,
+            "zoneWidth": 0.35,
+            "triggerOn": "both",
+            "zoneCooldownMs": 120
+          }
+        },
+        "noteMapping": {
+          "id": "relativePosition",
+          "params": {}
+        }
+      },
+      "scale": {
+        "root": "F",
+        "scaleType": "minor_natural",
+        "octaveLow": 3,
+        "octaveHigh": 5,
+        "mappingMode": "linear"
+      },
+      "synth": {
+        "synthType": "Synth",
+        "noteDuration": "16n",
+        "velocityScale": 0.4,
+        "synthOptions": {
+          "oscillator": {
+            "type": "sawtooth"
+          },
+          "envelope": {
+            "attack": 0.005,
+            "decay": 0.2,
+            "sustain": 0,
+            "release": 0.4
+          }
+        },
+        "effects": [
+          {
+            "type": "Filter",
+            "wet": 1,
+            "options": {
+              "frequency": 1300,
+              "type": "lowpass",
+              "rolloff": -24,
+              "Q": 5
+            }
+          },
+          {
+            "type": "Chorus",
+            "wet": 0.2,
+            "options": {
+              "frequency": 0.8,
+              "delayTime": 4,
+              "depth": 0.5
+            }
+          },
+          {
+            "type": "Reverb",
+            "wet": 0.3,
+            "options": {
+              "decay": 3,
+              "preDelay": 0.01
+            }
+          },
+          {
+            "type": "PingPongDelay",
+            "wet": 0.3,
+            "options": {
+              "delayTime": "8n",
+              "feedback": 0.4
+            }
+          },
+          {
+            "type": "EQ3",
+            "wet": 1,
+            "options": {
+              "low": 0,
+              "mid": 1,
+              "high": -1,
+              "lowFrequency": 400,
+              "highFrequency": 2500
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "harmonic": {
+    "params": {
+      "enabled": true,
+      "sides": 5,
+      "speedMode": "periodSync",
+      "syncSourceIndex": 0,
+      "syncRatio": 2,
+      "progressionId": "pedal",
+      "transposeChance": 1,
+      "chordVoicing": "sus2",
+      "padOctave": 4,
+      "bassOctave": 2,
+      "padEnabled": true,
+      "padVolume": 0.3,
+      "bassEnabled": true,
+      "bassVolume": 0.35
+    }
+  },
+  "camera": {
+    "position": {
+      "x": 0.593,
+      "y": -4.41,
+      "z": 3.554
+    },
+    "target": {
+      "x": 0.884,
+      "y": -0.427,
+      "z": -0.764
+    }
+  },
+  "visual": {
+    "bloomStrength": 0.5,
+    "chromaticIntensity": 0.6,
+    "trails": 0.3,
+    "spinSpeed": 0.025
+  }
+}

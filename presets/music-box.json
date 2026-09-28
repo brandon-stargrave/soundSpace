@@ -1,0 +1,121 @@
+{
+  "app": "soundSpace",
+  "version": 2,
+  "orbits": [
+    {
+      "generator": {
+        "params": {
+          "nodeCount": 6,
+          "radius": 3,
+          "baseSpeed": 0.4,
+          "direction": "cw",
+          "trailLength": 40,
+          "trailStyle": "dots",
+          "tailLength": 0.6,
+          "tailDecompose": 0.3,
+          "nodeStyle": "orb",
+          "nodeSize": 0.14,
+          "showConnectionLines": false,
+          "motionAlgorithm": "none",
+          "triggerMethod": "staticPins",
+          "noteMapping": "angle",
+          "orbitIndex": 0
+        },
+        "triggerMethod": {
+          "id": "staticPins",
+          "params": {
+            "pinCount": 12,
+            "pinLayout": "euclidean",
+            "pinCooldownMs": 60
+          }
+        },
+        "noteMapping": {
+          "id": "angle",
+          "params": {}
+        }
+      },
+      "scale": {
+        "root": "D",
+        "scaleType": "pentatonic_major",
+        "octaveLow": 4,
+        "octaveHigh": 5,
+        "mappingMode": "linear"
+      },
+      "synth": {
+        "synthType": "PluckSynth",
+        "noteDuration": "8n",
+        "velocityScale": 0.9,
+        "synthOptions": {
+          "attackNoise": 1.2,
+          "dampening": 5200,
+          "resonance": 0.93
+        },
+        "effects": [
+          {
+            "type": "Filter",
+            "wet": 1,
+            "options": {
+              "frequency": 7000,
+              "type": "lowpass",
+              "rolloff": -12,
+              "Q": 1
+            }
+          },
+          {
+            "type": "Chorus",
+            "wet": 0.15,
+            "options": {
+              "frequency": 1.2,
+              "delayTime": 3.5,
+              "depth": 0.6
+            }
+          },
+          {
+            "type": "Reverb",
+            "wet": 0.35,
+            "options": {
+              "decay": 3,
+              "preDelay": 0.01
+            }
+          },
+          {
+            "type": "PingPongDelay",
+            "wet": 0.16,
+            "options": {
+              "delayTime": "8n",
+              "feedback": 0.25
+            }
+          },
+          {
+            "type": "EQ3",
+            "wet": 1,
+            "options": {
+              "low": -2,
+              "mid": 0,
+              "high": 1.5,
+              "lowFrequency": 400,
+              "highFrequency": 2500
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "camera": {
+    "position": {
+      "x": 0.593,
+      "y": -4.41,
+      "z": 3.554
+    },
+    "target": {
+      "x": 0.884,
+      "y": -0.427,
+      "z": -0.764
+    }
+  },
+  "visual": {
+    "bloomStrength": 0.55,
+    "trails": 0.3,
+    "spinSpeed": 0.02
+  }
+}

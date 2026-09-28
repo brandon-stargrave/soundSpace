@@ -4,6 +4,16 @@ import { makeShareLink } from './ShareLink.js';
 // Presets are small; anything this large isn't one
 const MAX_PRESET_BYTES = 1024 * 1024;
 
+// Bundled examples, each loaded on demand as its own small chunk
+const PRESET_LOADERS = import.meta.glob('../../presets/*.json', { import: 'default' });
+const BUNDLED_PRESETS = [
+  { file: 'music-box', name: 'Music Box', about: 'Six nodes pluck a Euclidean ring of pins.' },
+  { file: 'harmonic-drift', name: 'Harmonic Drift', about: 'Phasing pins over a I–V–vi–IV pad and bass.' },
+  { file: 'polyrhythm', name: 'Polyrhythm', about: 'Four rings: drum, keys, bells and a slow pad.' },
+  { file: 'zones', name: 'Zones', about: 'A golden-spiral swarm through five zones, with drones.' },
+  { file: 'night-garden', name: 'Night Garden', about: 'Slow, wide and ambient.' },
+];
+
 function timestampForFilename() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -50,16 +60,38 @@ export class Presets {
     loadBtn.title = 'Open a saved .json preset';
     loadBtn.addEventListener('click', () => this._load());
 
-    const demoBtn = document.createElement('button');
-    demoBtn.className = 'btn';
-    demoBtn.textContent = 'Demo';
-    demoBtn.title = 'Load the bundled niceStart preset';
-    demoBtn.addEventListener('click', () => this._loadDemo());
+    // Examples
+    const examples = document.createElement('div');
+    examples.className = 'control-row preset-examples';
+    const label = document.createElement('label');
+    label.textContent = 'Examples';
+    label.htmlFor = 'preset-examples';
+    const select = document.createElement('select');
+    select.id = 'preset-examples';
+    for (const p of BUNDLED_PRESETS) {
+      const option = document.createElement('option');
+      option.value = p.file;
+      option.textContent = p.name;
+      select.appendChild(option);
+    }
+    const about = document.createElement('div');
+    about.className = 'panel-note';
+    const showAbout = () => { about.textContent = BUNDLED_PRESETS.find(p => p.file === select.value)?.about ?? ''; };
+    select.addEventListener('change', showAbout);
+    showAbout();
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn';
+    openBtn.textContent = 'Open';
+    openBtn.addEventListener('click', () => this.loadExample(select.value));
+    examples.appendChild(label);
+    examples.appendChild(select);
+    examples.appendChild(openBtn);
+    body.appendChild(examples);
+    body.appendChild(about);
 
-    this._buttons = [saveBtn, loadBtn, demoBtn];
+    this._buttons = [saveBtn, loadBtn, openBtn];
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(loadBtn);
-    btnRow.appendChild(demoBtn);
     body.appendChild(btnRow);
 
     const shareRow = document.createElement('div');
@@ -144,21 +176,23 @@ export class Presets {
     await this.apply(data, file.name);
   }
 
-  async _loadDemo() {
-    if (this._busy) return;
+  /** Load one of the bundled example presets by file name. */
+  async loadExample(file) {
+    const entry = BUNDLED_PRESETS.find(p => p.file === file);
+    const loader = PRESET_LOADERS[`../../presets/${file}.json`];
+    if (!entry || !loader || this._busy) return;
     this._setBusy(true);
     let data;
     try {
-      // Fetched on demand so the preset stays out of the main bundle
-      ({ default: data } = await import('../../presets/niceStart.json'));
+      data = await loader();
     } catch (err) {
-      console.error('Failed to fetch the demo preset:', err);
-      showToast('The demo preset could not be downloaded. Check your connection and try again.', { kind: 'error' });
+      console.error('Failed to fetch the example preset:', err);
+      showToast('That example could not be downloaded. Check your connection and try again.', { kind: 'error' });
       this._setBusy(false);
       return;
     }
     this._setBusy(false);
-    await this.apply(structuredClone(data), 'Demo');
+    await this.apply(structuredClone(data), entry.name);
   }
 
   /**

@@ -20,6 +20,9 @@ import { parentScale, hasFlatSeven, isMinorKey, diatonicChord, chordRoot, voiceC
 
 const TWO_PI = Math.PI * 2;
 
+const PAD_TRIM_DB = 2;
+const BASS_TRIM_DB = -18;
+
 // Scratch objects for the holo trail's per-instance updates
 const _holoMatrix = new THREE.Matrix4();
 const _holoColor = new THREE.Color();
@@ -167,8 +170,10 @@ export class HarmonicOrbit {
 
   async initAudio() {
     if (this._audioInitialized) return;
-    this._pad = new AuxVoice(DEFAULT_PAD_SYNTH_CONFIG);
-    this._bass = new AuxVoice(DEFAULT_BASS_SYNTH_CONFIG);
+    // Trims balance the drones under the orbits' melody: the sawtooth bass
+    // drone alone measured about 18 dB hotter than the pad
+    this._pad = new AuxVoice(DEFAULT_PAD_SYNTH_CONFIG, { trimDb: PAD_TRIM_DB });
+    this._bass = new AuxVoice(DEFAULT_BASS_SYNTH_CONFIG, { trimDb: BASS_TRIM_DB });
     await this._pad.init();
     await this._bass.init();
     this._pad.setVolume(this.params.padVolume);
