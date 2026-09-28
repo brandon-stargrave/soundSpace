@@ -33,7 +33,7 @@ function build() {
       <h3>Try this</h3>
       <ol>
         <li>Listen and watch: each crossing flashes and plays a note. Headphones help.</li>
-        <li>In <b>Orbit 1 · Generator</b>, change <b>Nodes</b>, <b>Node Speed</b> and <b>Trigger</b>.</li>
+        <li>Open the panel on the right (on a phone, tap the <b>Controls</b> tab at the edge). In <b>Orbit 1 · Generator</b>, change <b>Nodes</b>, <b>Node Speed</b> and <b>Trigger</b>.</li>
         <li>Add orbits with <b>+</b>, or turn on the <b>Harmonic Orbit</b> for chords under the melody.</li>
         <li>Open <b>Presets</b> to load an example, save your setup, or copy a link to share it.</li>
       </ol>

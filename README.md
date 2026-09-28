@@ -122,8 +122,8 @@ use soundSpace as a visualizer.
 
 A desktop or laptop with a dedicated or recent integrated GPU is recommended.
 On phones and tablets soundSpace plays and the panel starts hidden (tap the
-small tab at the right edge to open it); MIDI, OSC, and recording are meant for
-a computer.
+**Controls** tab at the right edge to open it); MIDI, OSC, and recording are
+meant for a computer.
 
 soundSpace follows your system's reduced-motion setting: when it's on, the
 color-split flashes and shooting stars are turned off and the bursts of light

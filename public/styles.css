@@ -456,7 +456,7 @@ body.ui-hidden #panel-toggle {
 
 #panel-toggle {
   position: absolute;
-  left: -24px;
+  right: 100%;
   top: 50%;
   transform: translateY(-50%);
   width: 24px;
@@ -481,16 +481,63 @@ body.ui-hidden #panel-toggle {
   background: rgba(0, 255, 255, 0.06);
 }
 
+/* Collapsed, the tab is the only way back to the controls: big enough to hit */
 #config-panel.collapsed #panel-toggle {
-  transform: translateY(-50%) scaleX(-1);
-  width: 18px;
-  height: 32px;
-  font-size: 9px;
-  opacity: 0.75;
+  width: 26px;
+  height: 48px;
+  font-size: 13px;
+  color: #9fefff;
+  background: rgba(10, 16, 34, 0.85);
+  border-color: rgba(0, 255, 255, 0.3);
 }
 
-#config-panel.collapsed #panel-toggle:hover {
-  opacity: 1;
+.panel-toggle-label {
+  display: none;
+}
+
+/* Until the panel has been opened once, the tab glows and says what it is */
+#config-panel.collapsed #panel-toggle.hint {
+  width: 30px;
+  height: auto;
+  padding: 12px 0;
+  flex-direction: column;
+  gap: 8px;
+  color: #00ffff;
+  background: rgba(0, 38, 48, 0.9);
+  border-color: rgba(0, 255, 255, 0.65);
+  animation: panel-hint 2.4s ease-in-out infinite;
+}
+
+#panel-toggle.hint .panel-toggle-label {
+  display: block;
+  writing-mode: vertical-rl;
+  font-size: 10px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+@keyframes panel-hint {
+  0%, 100% {
+    transform: translateY(-50%);
+    box-shadow: 0 0 6px rgba(0, 255, 255, 0.25);
+  }
+  50% {
+    transform: translateY(-50%) translateX(-4px);
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.6), inset 0 0 6px rgba(0, 255, 255, 0.35);
+  }
+}
+
+@media (pointer: coarse) {
+  #config-panel.collapsed #panel-toggle {
+    width: 32px;
+    height: 60px;
+    font-size: 16px;
+  }
+
+  #config-panel.collapsed #panel-toggle.hint {
+    width: 34px;
+    height: auto;
+  }
 }
 
 #panel-content {
@@ -640,8 +687,12 @@ body.ui-hidden #panel-toggle {
   min-width: 0;
 }
 
+/* The switch is a <label> too, but must not take the row labels' width */
 .control-row .toggle-switch {
   margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: none;
 }
 
 .control-row .control-value {
@@ -755,8 +806,8 @@ select option {
 .toggle-slider::before {
   content: '';
   position: absolute;
-  left: 2px;
-  top: 2px;
+  left: 1px;
+  top: 1px;
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -772,6 +823,25 @@ select option {
   transform: translateX(18px);
   background: #00ffff;
   box-shadow: 0 0 6px #00ffff66;
+}
+
+/* Touch screens: a switch you can hit with a thumb */
+@media (pointer: coarse) {
+  .toggle-switch {
+    width: 42px;
+    height: 24px;
+  }
+
+  .toggle-slider {
+    border-radius: 12px;
+  }
+
+  .toggle-slider::before {
+    left: 2px;
+    top: 2px;
+    width: 18px;
+    height: 18px;
+  }
 }
 
 /* ── Number Input ─────────────────────────────────────────────── */
@@ -1165,6 +1235,10 @@ input[type="range"]:focus-visible {
   .record-btn.recording { animation: none; }
   .toast { animation: none; }
   #config-panel { transition: none; }
+  #config-panel.collapsed #panel-toggle.hint {
+    animation: none;
+    box-shadow: 0 0 14px rgba(0, 255, 255, 0.5);
+  }
 }
 
 /* ── Help ─────────────────────────────────────────────────────── */

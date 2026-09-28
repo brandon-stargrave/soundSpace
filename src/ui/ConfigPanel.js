@@ -11,6 +11,13 @@ import { openHelp } from './HelpOverlay.js';
 import { rangeRow, toggleRow } from './controls.js';
 import { MAX_ORBITS } from '../core/presetSchema.js';
 
+// Set once the panel has been opened: until then, a collapsed panel's tab glows
+const PANEL_OPENED_KEY = 'soundspace.panelOpened';
+
+function panelOpenedBefore() {
+  try { return localStorage.getItem(PANEL_OPENED_KEY) === '1'; } catch { return false; }
+}
+
 /**
  * Main configuration panel manager.
  * Supports multiple orbits with per-orbit generator, scale, and synth settings.
@@ -27,6 +34,7 @@ export class ConfigPanel {
     this._orbitBar = null;
     this._orbitClipboard = null;      // stored orbit config for copy/paste
     this.onCollapsedChange = null;
+    this._showHint = !panelOpenedBefore();
   }
 
   init() {
@@ -49,7 +57,7 @@ export class ConfigPanel {
     const toggle = document.getElementById('panel-toggle');
     toggle.addEventListener('click', () => this.setCollapsed(!this._collapsed));
     // On a phone the open panel would cover most of the scene
-    if (window.matchMedia?.('(max-width: 700px)').matches) this.setCollapsed(true);
+    this.setCollapsed(!!window.matchMedia?.('(max-width: 700px)').matches);
   }
 
   /** Rebuild every section so it shows the engine's current state (e.g. after a preset load). */
@@ -137,6 +145,13 @@ export class ConfigPanel {
     const toggle = document.getElementById('panel-toggle');
     toggle.setAttribute('aria-expanded', String(!this._collapsed));
     toggle.setAttribute('aria-label', this._collapsed ? 'Show panel' : 'Hide panel');
+    toggle.querySelector('.panel-toggle-icon').textContent = this._collapsed ? '\u00AB' : '\u00BB';
+    // Anyone who has seen the panel open knows where it lives
+    if (!this._collapsed && this._showHint) {
+      this._showHint = false;
+      try { localStorage.setItem(PANEL_OPENED_KEY, '1'); } catch {}
+    }
+    toggle.classList.toggle('hint', this._collapsed && this._showHint);
     // Keep the hidden panel's controls out of the Tab order
     this.container.inert = this._collapsed;
     // The letterboxed viewport (Record panel) centers within the visible
