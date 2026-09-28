@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TriggerMethod } from './TriggerMethod.js';
-import { normalizeAngle, angleDelta, clamp, polarToCartesian } from '../../util/math.js';
+import { normalizeAngle, polarToCartesian, countPasses } from '../../util/math.js';
+import { noteVelocity } from './velocity.js';
 
 const TWO_PI = Math.PI * 2;
 
@@ -15,11 +16,9 @@ export class ZoneTriggers extends TriggerMethod {
       zoneCount: 4,
       zoneWidth: 0.3,
       triggerOn: 'enter',
-      zoneRotate: true,
       zoneCooldownMs: 150,
     };
     this._zones = [];
-    this._nodeInZone = []; // [nodeIndex][zoneIndex] = boolean
     this._cooldowns = new Map();
     this._arcMeshes = [];
     this._sceneGroup = null;
@@ -47,15 +46,7 @@ export class ZoneTriggers extends TriggerMethod {
       });
     }
 
-    // Init node-in-zone tracking
-    this._nodeInZone = [];
-    for (let ni = 0; ni < nodes.length; ni++) {
-      this._nodeInZone[ni] = new Array(zoneCount).fill(false);
-      // Set initial state
-      for (let zi = 0; zi < zoneCount; zi++) {
-        this._nodeInZone[ni][zi] = this._isInZone(nodes[ni].angle, this._zones[zi]);
-      }
-    }
+    this._arcRadius = gp.radius;
 
     // Create visual arc segments
     if (this._sceneGroup) {
@@ -87,56 +78,51 @@ export class ZoneTriggers extends TriggerMethod {
     }
   }
 
-  _isInZone(angle, zone) {
-    const delta = angleDelta(angle, zone.center);
-    return Math.abs(delta) <= zone.halfWidth;
-  }
-
+  /**
+   * A node enters a zone when it crosses the edge it meets first in its
+   * direction of travel, and leaves by the other edge. Edge crossings are
+   * exact, so a fast node can't skip a narrow zone between frames.
+   */
   detectTriggers(deltaTime, nodes, generatorParams) {
     const triggers = [];
     const now = performance.now();
     const { triggerOn, zoneCooldownMs } = this.params;
-
-    // Ensure tracking arrays match node count
-    while (this._nodeInZone.length < nodes.length) {
-      this._nodeInZone.push(new Array(this._zones.length).fill(false));
-    }
+    let maxSpeed = 0;
+    for (const node of nodes) maxSpeed = Math.max(maxSpeed, Math.abs(node.speed));
 
     for (let ni = 0; ni < nodes.length; ni++) {
       const node = nodes[ni];
+      const step = node.step ?? 0;
+      if (!step) continue;
+      const dir = step > 0 ? 1 : -1;
 
       for (let zi = 0; zi < this._zones.length; zi++) {
         const zone = this._zones[zi];
-        const wasIn = this._nodeInZone[ni]?.[zi] || false;
-        // Compare in local angle space
-        const isIn = this._isInZone(node.angle, zone);
-        this._nodeInZone[ni][zi] = isIn;
+        const events = [];
+        if (triggerOn !== 'exit' && countPasses(node.prevAngle, step, zone.center - dir * zone.halfWidth) > 0) events.push('in');
+        if (triggerOn !== 'enter' && countPasses(node.prevAngle, step, zone.center + dir * zone.halfWidth) > 0) events.push('out');
 
-        let shouldTrigger = false;
-        if (triggerOn === 'enter' && !wasIn && isIn) shouldTrigger = true;
-        if (triggerOn === 'exit' && wasIn && !isIn) shouldTrigger = true;
-        if (triggerOn === 'both' && wasIn !== isIn) shouldTrigger = true;
+        for (const edge of events) {
+          // Entering and leaving have separate cooldowns, so a short pass
+          // through a zone plays both
+          const key = `${ni}-z${zi}-${edge}`;
+          const lastTrigger = this._cooldowns.get(key) || 0;
+          if (now - lastTrigger < zoneCooldownMs) continue;
+          this._cooldowns.set(key, now);
 
-        if (!shouldTrigger) continue;
+          // Combine zone position + node identity for note variety
+          const zoneFrac = normalizeAngle(zone.center) / TWO_PI;
+          const nodeShift = ni / (nodes.length * 4);
+          const rawValue = (zoneFrac + nodeShift) % 1.0;
 
-        const key = `${ni}-z${zi}`;
-        const lastTrigger = this._cooldowns.get(key) || 0;
-        if (now - lastTrigger < zoneCooldownMs) continue;
-        this._cooldowns.set(key, now);
-
-        // Combine zone position + node identity for note variety
-        const zoneFrac = normalizeAngle(zone.center) / TWO_PI;
-        const nodeShift = ni / (nodes.length * 4);
-        const rawValue = (zoneFrac + nodeShift) % 1.0;
-        const velocity = clamp(Math.abs(node.speed) / (generatorParams.baseSpeed * 5), 0.2, 1.0);
-
-        // Use rendered mesh position (includes globalAngle)
-        triggers.push({
-          nodeIndexA: ni,
-          rawValue,
-          velocity,
-          position: { x: node.mesh.position.x, y: node.mesh.position.y },
-        });
+          // Use rendered mesh position (includes globalAngle)
+          triggers.push({
+            nodeIndexA: ni,
+            rawValue,
+            velocity: noteVelocity(node.speed, maxSpeed),
+            position: { x: node.mesh.position.x, y: node.mesh.position.y },
+          });
+        }
       }
     }
 
@@ -144,6 +130,10 @@ export class ZoneTriggers extends TriggerMethod {
   }
 
   update(deltaTime, generatorParams, globalAngle) {
+    // Redraw the arcs if the orbit's Radius changed
+    if (generatorParams.radius !== this._arcRadius && this._lastNodes) {
+      this._buildZones(this._lastNodes, generatorParams);
+    }
     // Rotate arc visuals to match orbit ring rotation
     for (const arc of this._arcMeshes) {
       arc.rotation.z = globalAngle;
@@ -163,7 +153,8 @@ export class ZoneTriggers extends TriggerMethod {
     return [
       { key: 'zoneCount', label: 'Zone Count', type: 'range', min: 1, max: 8, step: 1, value: this.params.zoneCount },
       { key: 'zoneWidth', label: 'Zone Width', type: 'range', min: 0.05, max: 1.0, step: 0.05, value: this.params.zoneWidth },
-      { key: 'triggerOn', label: 'Trigger On', type: 'select', value: this.params.triggerOn, options: ['enter', 'exit', 'both'] },
+      { key: 'triggerOn', label: 'Trigger On', type: 'select', value: this.params.triggerOn, options: ['enter', 'exit', 'both'],
+        optionLabels: { enter: 'Entering', exit: 'Leaving', both: 'Both' } },
       { key: 'zoneCooldownMs', label: 'Cooldown (ms)', type: 'range', min: 0, max: 500, step: 10, value: this.params.zoneCooldownMs },
     ];
   }
@@ -179,6 +170,5 @@ export class ZoneTriggers extends TriggerMethod {
   dispose() {
     this._disposeArcs();
     this._cooldowns.clear();
-    this._nodeInZone = [];
   }
 }

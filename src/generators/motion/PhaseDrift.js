@@ -41,7 +41,7 @@ export class PhaseDrift extends MotionAlgorithm {
     let curveMultiplier;
     switch (driftCurve) {
       case 'exponential':
-        curveMultiplier = 1 + stagePhase * 2;
+        curveMultiplier = Math.pow(3, stagePhase);
         break;
       case 'sinusoidal':
         curveMultiplier = Math.sin(stagePhase * Math.PI);
@@ -57,7 +57,7 @@ export class PhaseDrift extends MotionAlgorithm {
       driftMod = 1 + Math.sin(this._elapsedTime * driftModRate * TWO_PI) * 0.5;
     }
 
-    // Compute mean angle for realignment force
+    // Mean direction of all nodes, for the realignment pull
     let meanAngle = 0;
     if (realignStrength > 0) {
       let sumX = 0, sumY = 0;
@@ -72,16 +72,15 @@ export class PhaseDrift extends MotionAlgorithm {
       // Each node gets a progressively larger epsilon offset
       let epsilon = driftRate * i * stageDir * curveMultiplier * driftMod;
 
-      // Realignment: gentle pull toward mean angle
+      // Realignment: a pull toward the mean angle along each node's own
+      // direction of travel (a node going the other way needs the opposite
+      // speed change to close the gap)
       if (realignStrength > 0) {
-        let delta = meanAngle - nodes[i].angle;
-        // Normalize to [-PI, PI]
-        while (delta > Math.PI) delta -= TWO_PI;
-        while (delta < -Math.PI) delta += TWO_PI;
-        epsilon += delta * realignStrength * 0.1;
+        epsilon += nodes[i].dir * Math.sin(meanAngle - nodes[i].angle) * realignStrength * 0.1;
       }
 
-      this._speedBuffer[i] = baseSpeed + epsilon;
+      // Drift never stops a node or runs it backwards
+      this._speedBuffer[i] = Math.max(baseSpeed * 0.1, baseSpeed + epsilon);
     }
 
     return this._speedBuffer;
@@ -89,9 +88,11 @@ export class PhaseDrift extends MotionAlgorithm {
 
   getParams() {
     return [
+      { key: 'hint', type: 'note', text: 'Nodes move nearly in step and slowly drift apart. Most notes come from Static Pins or Zone Triggers; with Node Collision, nodes moving in opposite directions do the crossing.' },
       { key: 'basePeriod', label: 'Base Period (s)', type: 'range', min: 2, max: 60, step: 0.5, value: this.params.basePeriod },
       { key: 'driftRate', label: 'Drift Rate', type: 'range', min: 0.001, max: 0.05, step: 0.001, value: this.params.driftRate },
-      { key: 'driftCurve', label: 'Drift Shape', type: 'select', value: this.params.driftCurve, options: ['linear', 'exponential', 'sinusoidal'] },
+      { key: 'driftCurve', label: 'Drift Shape', type: 'select', value: this.params.driftCurve, options: ['linear', 'exponential', 'sinusoidal'],
+        optionLabels: { linear: 'Steady', exponential: 'Accelerating', sinusoidal: 'Swelling' } },
       { key: 'stageLength', label: 'Stage Length (s)', type: 'range', min: 10, max: 300, step: 5, value: this.params.stageLength },
       { key: 'realignStrength', label: 'Re-align Pull', type: 'range', min: 0, max: 0.5, step: 0.01, value: this.params.realignStrength },
       { key: 'driftModRate', label: 'Drift Modulation', type: 'range', min: 0, max: 0.1, step: 0.005, value: this.params.driftModRate },

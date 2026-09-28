@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TriggerMethod } from './TriggerMethod.js';
-import { normalizeAngle, angleDelta, clamp, polarToCartesian } from '../../util/math.js';
+import { normalizeAngle, polarToCartesian, countPasses, euclideanPattern } from '../../util/math.js';
+import { noteVelocity } from './velocity.js';
 
 const TWO_PI = Math.PI * 2;
 
@@ -16,7 +17,6 @@ export class StaticPins extends TriggerMethod {
       pinCount: 8,
       pinLayout: 'even',
       pinCooldownMs: 100,
-      pinRotate: true,
     };
     this._cooldowns = new Map();
     this._pinAngles = [];
@@ -81,41 +81,36 @@ export class StaticPins extends TriggerMethod {
   detectTriggers(deltaTime, nodes, generatorParams) {
     const triggers = [];
     const now = performance.now();
+    let maxSpeed = 0;
+    for (const node of nodes) maxSpeed = Math.max(maxSpeed, Math.abs(node.speed));
 
     for (let ni = 0; ni < nodes.length; ni++) {
       const node = nodes[ni];
 
       for (let pi = 0; pi < this._pinAngles.length; pi++) {
         const pinAngle = this._pinAngles[pi];
+        // Pins sit in the same local angle space as the nodes
+        if (countPasses(node.prevAngle, node.step ?? 0, pinAngle) === 0) continue;
 
-        // Compare in local angle space (both node.angle and pinAngle are local)
-        const prevDelta = angleDelta(node.prevAngle, pinAngle);
-        const currDelta = angleDelta(node.angle, pinAngle);
-        // angleDelta also flips sign at the pin's antipode (±π) — only a flip near the pin is a crossing
-        if (Math.abs(prevDelta) > Math.PI / 2 || Math.abs(currDelta) > Math.PI / 2) continue;
+        // Cooldown per node-pin pair
+        const key = `${ni}-p${pi}`;
+        const lastTrigger = this._cooldowns.get(key) || 0;
+        if (now - lastTrigger < this.params.pinCooldownMs) continue;
+        this._cooldowns.set(key, now);
 
-        if ((prevDelta > 0 && currDelta <= 0) || (prevDelta < 0 && currDelta >= 0)) {
-          // Cooldown per node-pin pair
-          const key = `${ni}-p${pi}`;
-          const lastTrigger = this._cooldowns.get(key) || 0;
-          if (now - lastTrigger < this.params.pinCooldownMs) continue;
-          this._cooldowns.set(key, now);
+        // Combine pin position + node identity for note variety
+        // Pin determines base position, node index shifts octave range
+        const pinFrac = normalizeAngle(pinAngle) / TWO_PI;
+        const nodeShift = ni / (nodes.length * 4); // subtle per-node offset
+        const rawValue = (pinFrac + nodeShift) % 1.0;
 
-          // Combine pin position + node identity for note variety
-          // Pin determines base position, node index shifts octave range
-          const pinFrac = normalizeAngle(pinAngle) / TWO_PI;
-          const nodeShift = ni / (nodes.length * 4); // subtle per-node offset
-          const rawValue = (pinFrac + nodeShift) % 1.0;
-          const velocity = clamp(Math.abs(node.speed) / (generatorParams.baseSpeed * 5), 0.2, 1.0);
-
-          // Display position from the rendered mesh (already includes globalAngle)
-          triggers.push({
-            nodeIndexA: ni,
-            rawValue,
-            velocity,
-            position: { x: node.mesh.position.x, y: node.mesh.position.y },
-          });
-        }
+        // Display position from the rendered mesh (already includes globalAngle)
+        triggers.push({
+          nodeIndexA: ni,
+          rawValue,
+          velocity: noteVelocity(node.speed, maxSpeed),
+          position: { x: node.mesh.position.x, y: node.mesh.position.y },
+        });
       }
     }
 
@@ -131,48 +126,14 @@ export class StaticPins extends TriggerMethod {
     }
   }
 
+  /** Pins on the onsets of a Euclidean rhythm of `pulses` over `steps`. */
   _euclideanAngles(pulses, steps) {
-    // Bjorklund algorithm to distribute pulses evenly across steps
-    const pattern = this._bjorklund(pulses, steps);
+    const pattern = euclideanPattern(pulses, steps);
     const angles = [];
     for (let i = 0; i < pattern.length; i++) {
-      if (pattern[i]) {
-        angles.push((i / pattern.length) * TWO_PI);
-      }
+      if (pattern[i]) angles.push((i / pattern.length) * TWO_PI);
     }
     return angles;
-  }
-
-  _bjorklund(pulses, steps) {
-    if (pulses >= steps) return new Array(steps).fill(true);
-    if (pulses <= 0) return new Array(steps).fill(false);
-
-    let groups = [];
-    for (let i = 0; i < steps; i++) {
-      groups.push([i < pulses]);
-    }
-
-    let remainder = steps - pulses;
-    let divisor = pulses;
-
-    while (remainder > 1) {
-      const newGroups = [];
-      const limit = Math.min(divisor, remainder);
-      for (let i = 0; i < limit; i++) {
-        newGroups.push([...groups[i], ...groups[groups.length - 1 - i]]);
-      }
-      // Remaining groups that weren't paired
-      for (let i = limit; i < divisor; i++) {
-        newGroups.push(groups[i]);
-      }
-      groups = newGroups;
-      const prevRemainder = remainder;
-      remainder = Math.abs(divisor - remainder);
-      divisor = limit;
-      if (remainder <= 1) break;
-    }
-
-    return groups.flat();
   }
 
   _disposePinMeshes() {
@@ -187,7 +148,8 @@ export class StaticPins extends TriggerMethod {
   getParams() {
     return [
       { key: 'pinCount', label: 'Pin Count', type: 'range', min: 1, max: 24, step: 1, value: this.params.pinCount },
-      { key: 'pinLayout', label: 'Pin Layout', type: 'select', value: this.params.pinLayout, options: ['even', 'euclidean', 'scale'] },
+      { key: 'pinLayout', label: 'Pin Layout', type: 'select', value: this.params.pinLayout, options: ['even', 'euclidean', 'scale'],
+        optionLabels: { even: 'Even', euclidean: 'Euclidean rhythm', scale: 'Uneven (scale-like)' } },
       { key: 'pinCooldownMs', label: 'Pin Cooldown (ms)', type: 'range', min: 0, max: 500, step: 10, value: this.params.pinCooldownMs },
     ];
   }

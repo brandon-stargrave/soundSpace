@@ -2,9 +2,10 @@ import { NoteMapping } from './NoteMapping.js';
 import { clamp } from '../../util/math.js';
 
 /**
- * Pitch from node's current speed relative to its running average.
- * LFO-driven speed variations directly sculpt melody contour.
- * Pairs well with Modulation Stacks and Euclidean Rhythms.
+ * Pitch from how energetic the triggering node is: its speed compared with
+ * its own recent average (speeding up plays higher), plus its speed compared
+ * with the orbit's other nodes (faster nodes sit higher). The first part
+ * follows motion algorithms; the second keeps it melodic with fixed speeds.
  */
 export class EnergyMapping extends NoteMapping {
   constructor() {
@@ -20,26 +21,31 @@ export class EnergyMapping extends NoteMapping {
     this._averages = nodes.map(n => Math.abs(n.speed));
   }
 
-  mapValue(trig, nodes, generatorParams) {
-    const { nodeIndexA } = trig;
-    const a = nodes[nodeIndexA];
-    const currentSpeed = Math.abs(a.speed);
-
-    // Ensure averages array is big enough
-    while (this._averages.length <= nodeIndexA) {
-      this._averages.push(currentSpeed);
+  /** Track each node's average speed over time (not per note, which would depend on note rate). */
+  update(deltaTime, nodes, generatorParams) {
+    // Smoothing reads as a per-frame factor at 60 fps: 0.98 averages over ~0.8 s
+    const tau = (1 / Math.max(1 - this.params.smoothing, 1e-4)) / 60;
+    const k = 1 - Math.exp(-deltaTime / tau);
+    for (let i = 0; i < nodes.length; i++) {
+      const speed = Math.abs(nodes[i].speed);
+      if (i >= this._averages.length) this._averages.push(speed);
+      this._averages[i] += (speed - this._averages[i]) * k;
     }
+  }
 
-    // Update running average
-    const avg = this._averages[nodeIndexA];
-    this._averages[nodeIndexA] = avg * this.params.smoothing + currentSpeed * (1 - this.params.smoothing);
+  mapValue(trig, nodes, generatorParams) {
+    const a = nodes[trig.nodeIndexA];
+    const speed = Math.abs(a.speed);
+    const avg = this._averages[trig.nodeIndexA] ?? speed;
+    const temporal = (speed - avg) / Math.max(avg, 0.01);
 
-    // Deviation from average, scaled by sensitivity
-    const deviation = (currentSpeed - this._averages[nodeIndexA]) / Math.max(this._averages[nodeIndexA], 0.01);
-    // Map deviation to 0-1: 0.5 is average, >0.5 is above average, <0.5 is below
-    const rawValue = 0.5 + deviation * this.params.sensitivity * 0.5;
+    let mean = 0;
+    for (const n of nodes) mean += Math.abs(n.speed);
+    mean /= Math.max(nodes.length, 1);
+    const relative = (speed - mean) / Math.max(mean, 0.01);
 
-    return clamp(rawValue, 0, 1);
+    // 0.5 is average; above means faster than usual or than the others
+    return clamp(0.5 + (temporal + 0.5 * relative) * this.params.sensitivity * 0.5, 0, 1);
   }
 
   getParams() {

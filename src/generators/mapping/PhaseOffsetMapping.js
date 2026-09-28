@@ -17,8 +17,11 @@ export class PhaseOffsetMapping extends NoteMapping {
   }
 
   mapValue(trig, nodes, generatorParams) {
-    const { nodeIndexA } = trig;
+    const { nodeIndexA, nodeIndexB } = trig;
     const a = nodes[nodeIndexA];
+    // The collision partner sits at the same angle; measuring against it
+    // would give the same offset every time
+    const skip = (i) => i === nodeIndexA || i === nodeIndexB;
     let refAngle;
 
     switch (this.params.referenceMode) {
@@ -26,7 +29,7 @@ export class PhaseOffsetMapping extends NoteMapping {
         // Mean angle of all other nodes
         let sumX = 0, sumY = 0;
         for (let i = 0; i < nodes.length; i++) {
-          if (i === nodeIndexA) continue;
+          if (skip(i)) continue;
           sumX += Math.cos(nodes[i].angle);
           sumY += Math.sin(nodes[i].angle);
         }
@@ -42,7 +45,7 @@ export class PhaseOffsetMapping extends NoteMapping {
         let minDist = Infinity;
         refAngle = 0;
         for (let i = 0; i < nodes.length; i++) {
-          if (i === nodeIndexA) continue;
+          if (skip(i)) continue;
           const dist = Math.abs(angleDelta(a.angle, nodes[i].angle));
           if (dist < minDist) {
             minDist = dist;
@@ -60,7 +63,8 @@ export class PhaseOffsetMapping extends NoteMapping {
 
   getParams() {
     return [
-      { key: 'referenceMode', label: 'Reference', type: 'select', value: this.params.referenceMode, options: ['nearest', 'mean', 'fixed'] },
+      { key: 'referenceMode', label: 'Reference', type: 'select', value: this.params.referenceMode, options: ['nearest', 'mean', 'fixed'],
+        optionLabels: { nearest: 'Nearest other node', mean: 'Average of the others', fixed: 'Top of the ring' } },
     ];
   }
 }

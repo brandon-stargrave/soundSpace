@@ -20,6 +20,10 @@ import {
 
 const TWO_PI = Math.PI * 2;
 
+// Simulation step limits: at most 1/120 s per step, at most 8 steps per frame
+const MAX_STEP_SECONDS = 1 / 120;
+const MAX_SUBSTEPS = 8;
+
 // Scratch colors for the per-frame tail blend
 const _tailColor = new THREE.Color();
 const _mixColor = new THREE.Color();
@@ -75,20 +79,12 @@ export class OrbitalNodes extends Generator {
   }
 
   update(deltaTime) {
-    // 1. Compute speeds (from algorithm or static)
-    let speeds = null;
-    if (this._motionAlgo) {
-      speeds = this._motionAlgo.computeSpeeds(deltaTime, this.nodes, this.params);
-    }
-
-    // Update angles
-    for (let i = 0; i < this.nodes.length; i++) {
-      const node = this.nodes[i];
-      node.prevAngle = node.angle;
-      // Triggers and mappings read node.speed, so it must carry the algorithm's live value
-      if (speeds) node.speed = speeds[i];
-      node.angle = normalizeAngle(node.angle + node.dir * node.speed * deltaTime);
-    }
+    // 1. Simulate motion and triggers in steps of at most 1/120 s, so fast
+    //    nodes and slow frames can't skip past a crossing
+    const steps = Math.min(MAX_SUBSTEPS, Math.max(1, Math.ceil(deltaTime / MAX_STEP_SECONDS)));
+    const h = deltaTime / steps;
+    const now = performance.now();
+    for (let s = 0; s < steps; s++) this._simulate(h, now);
 
     // 2. Update mesh positions & trails
     // Store trail points in local (non-rotated) space using raw angles.
@@ -189,16 +185,6 @@ export class OrbitalNodes extends Generator {
       this._updateConnectionLines();
     }
 
-    // 4. Detect triggers via pluggable method (the mapping sees this frame's motion first)
-    if (this._noteMapping) this._noteMapping.update(deltaTime, this.nodes, this.params);
-    const now = performance.now();
-    if (this._triggerMethod) {
-      const triggers = this._triggerMethod.detectTriggers(deltaTime, this.nodes, this.params);
-      for (const trig of triggers) {
-        this._emitTriggerFromDescriptor(trig, now);
-      }
-    }
-
     // 5. Update sparkle effects + trigger visuals
     this.sparklePool.update(deltaTime);
 
@@ -268,6 +254,27 @@ export class OrbitalNodes extends Generator {
       // (Emissive pulse removed — the iridescent sphere relies on bloom of
       // its bright iridescent reflections, not on an emissive layer, to avoid
       // Fresnel-driven white halos around the sphere.)
+    }
+  }
+
+  /** Advance node angles by one simulation step and fire any triggers it crossed. */
+  _simulate(h, now) {
+    const speeds = this._motionAlgo ? this._motionAlgo.computeSpeeds(h, this.nodes, this.params) : null;
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      node.prevAngle = node.angle;
+      // Triggers and mappings read node.speed, so it must carry the algorithm's live value
+      if (speeds) node.speed = speeds[i];
+      // The signed, unwrapped move this step: crossing tests count passes from it exactly
+      node.step = node.dir * node.speed * h;
+      node.angle = normalizeAngle(node.angle + node.step);
+    }
+    // The mapping sees this step's motion before the triggers fire
+    if (this._noteMapping) this._noteMapping.update(h, this.nodes, this.params);
+    if (this._triggerMethod) {
+      for (const trig of this._triggerMethod.detectTriggers(h, this.nodes, this.params)) {
+        this._emitTriggerFromDescriptor(trig, now);
+      }
     }
   }
 
@@ -573,6 +580,7 @@ export class OrbitalNodes extends Generator {
       this.nodes.push({
         angle,
         prevAngle: angle,
+        step: 0,
         speed,
         dir,
         mesh,

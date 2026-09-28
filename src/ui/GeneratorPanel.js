@@ -1,4 +1,4 @@
-import { section, divider, rangeRow, selectRow, toggleRow, numberRow } from './controls.js';
+import { section, divider, rangeRow, selectRow, toggleRow, numberRow, note } from './controls.js';
 import { PARAM_GROUPS } from '../generators/orbitParams.js';
 
 // Params that rebuild the orbit's geometry: while a slider drags, apply at
@@ -68,6 +68,8 @@ export class GeneratorPanel {
   _createControl(param, gen) {
     const help = param.help;
     switch (param.type) {
+      case 'note':
+        return note(param.text);
       case 'range':
         return rangeRow({
           label: param.label,

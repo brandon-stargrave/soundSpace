@@ -90,9 +90,12 @@ export class ScaleQuantizer {
 
   _mapToIndex(rawValue, tableLength) {
     switch (this.config.mappingMode) {
-      case 'wrap':
-        // Two passes: each half of the input range climbs the whole scale
-        return Math.min(tableLength - 1, Math.floor(((rawValue * 2) % 1) * tableLength));
+      case 'wrap': {
+        // Two passes: each half of the input range climbs the whole scale.
+        // The very top of the range (1.0) belongs to the end of the second pass.
+        const v = Math.min(rawValue, 1 - 1e-9);
+        return Math.min(tableLength - 1, Math.floor(((v * 2) % 1) * tableLength));
+      }
       case 'nearest':
         return clamp(Math.round(rawValue * (tableLength - 1)), 0, tableLength - 1);
       case 'random_in_scale':

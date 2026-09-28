@@ -15,6 +15,37 @@ export function angleDelta(a, b) {
   return d;
 }
 
+/**
+ * How many times a point moving from angle `start` by the signed, unwrapped
+ * step `delta` passes the angle `target` (all radians). Landing exactly on
+ * the target counts; starting on it doesn't, since the previous step counted
+ * it. Exact at any speed: a fast step can pass a target more than once.
+ */
+export function countPasses(start, delta, target) {
+  if (!delta) return 0;
+  const dir = delta > 0 ? 1 : -1;
+  let ahead = normalizeAngle(dir * (target - start));
+  if (ahead === 0) ahead = TWO_PI;
+  const dist = Math.abs(delta);
+  return dist < ahead ? 0 : 1 + Math.floor((dist - ahead) / TWO_PI);
+}
+
+/** Midpoint of two angles along the shorter arc between them. */
+export function circularMidpoint(a, b) {
+  return normalizeAngle(a + angleDelta(b, a) / 2);
+}
+
+/**
+ * Euclidean rhythm: `pulses` onsets spread as evenly as possible over
+ * `steps`, with an onset on step 0. Always exactly `pulses` onsets.
+ */
+export function euclideanPattern(pulses, steps) {
+  const p = Math.max(0, Math.min(Math.round(pulses), Math.round(steps)));
+  const pattern = [];
+  for (let i = 0; i < steps; i++) pattern.push((i * p) % steps < p);
+  return pattern;
+}
+
 /** Convert polar (angle, radius) to cartesian {x, y} */
 export function polarToCartesian(angle, radius) {
   return {
