@@ -24,6 +24,34 @@ function msaaSamplesFor(width, height) {
   return width * height <= 2.3e6 ? 4 : 0;
 }
 
+// The home view, composed for a landscape window
+const HOME_POSITION = new THREE.Vector3(0.5932243216769502, -4.40979250323908, 3.5542546184259214);
+const HOME_TARGET = new THREE.Vector3(0.8839200727001142, -0.42716111489327124, -0.763693798103482);
+// Narrower than this, the home view backs off so the widest orbit still fits
+const HOME_MIN_ASPECT = 1.15;
+const HOME_MAX_PULLBACK = 2.8;
+
+/**
+ * Camera position and target for the home view. A panel that covers the
+ * right of the scene shifts it left; a portrait screen centers the nebula
+ * and backs the camera away until the orbits fit across.
+ */
+function homeView(aspect, sidebarOpen) {
+  const pos = HOME_POSITION.clone();
+  const target = HOME_TARGET.clone();
+  if (aspect < HOME_MIN_ASPECT) {
+    const shift = -target.x;
+    pos.x += shift;
+    target.x += shift;
+    const pullback = Math.min(HOME_MAX_PULLBACK, HOME_MIN_ASPECT / aspect);
+    pos.sub(target).multiplyScalar(pullback).add(target);
+  } else if (sidebarOpen) {
+    pos.x -= 2.0;
+    target.x -= 2.0;
+  }
+  return { pos, target };
+}
+
 export class SceneManager {
   constructor(containerEl) {
     this.container = containerEl;
@@ -64,9 +92,10 @@ export class SceneManager {
     // Camera
     const aspect = window.innerWidth / window.innerHeight;
     this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 100);
-    this.camera.position.set(0.5932243216769502, -4.40979250323908, 3.5542546184259214);
+    const home = homeView(aspect, false);
+    this.camera.position.copy(home.pos);
     this.camera.up.set(0, 0, 1);
-    this.camera.lookAt(0.8839200727001142, -0.42716111489327124, -0.763693798103482);
+    this.camera.lookAt(home.target);
 
     // Orbit controls
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -78,7 +107,7 @@ export class SceneManager {
     this.controls.panSpeed = 0.8;
     this.controls.rotateSpeed = 0.8;
     this.controls.zoomSpeed = 1.0;
-    this.controls.target.set(0.8839200727001142, -0.42716111489327124, -0.763693798103482);
+    this.controls.target.copy(home.target);
 
     // Camera animation state
     this._cameraAnim = null;
@@ -605,12 +634,12 @@ export class SceneManager {
   resetCamera() {
     this._orbitMode = false;
     const sidebarOpen = !document.getElementById('config-panel')?.classList.contains('collapsed');
-    const xOffset = sidebarOpen ? -2.0 : 0;
+    const home = homeView(this.camera.aspect, sidebarOpen);
     this._cameraAnim = {
       startPos: this.camera.position.clone(),
       startTarget: this.controls.target.clone(),
-      endPos: new THREE.Vector3(0.5932243216769502 + xOffset, -4.40979250323908, 3.5542546184259214),
-      endTarget: new THREE.Vector3(0.8839200727001142 + xOffset, -0.42716111489327124, -0.763693798103482),
+      endPos: home.pos,
+      endTarget: home.target,
       progress: 0,
       duration: 1.8,
     };
