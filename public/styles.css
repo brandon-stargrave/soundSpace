@@ -207,11 +207,22 @@ body.ui-hidden #panel-toggle {
   display: flex;
 }
 
-#orbit-button {
+/* The orbit button and its speed popover share a wrapper, so hovering or
+ * focusing either keeps the popover open */
+.orbit-control {
   position: fixed;
   bottom: 16px;
   left: 60px;
   z-index: 50;
+  display: none;
+}
+
+.orbit-control.visible {
+  display: block;
+}
+
+#orbit-button {
+  position: relative;
   width: 36px;
   height: 36px;
   font-size: 20px;
@@ -228,7 +239,7 @@ body.ui-hidden #panel-toggle {
   transition: all 0.2s;
 }
 
-#orbit-button.visible {
+#orbit-button {
   display: flex;
 }
 
@@ -275,8 +286,8 @@ body.ui-hidden #panel-toggle {
   height: 8px;
 }
 
-#orbit-button:hover .orbit-speed-popover,
-.orbit-speed-popover:hover {
+.orbit-control:hover .orbit-speed-popover,
+.orbit-control:focus-within .orbit-speed-popover {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1154,4 +1165,119 @@ input[type="range"]:focus-visible {
   .record-btn.recording { animation: none; }
   .toast { animation: none; }
   #config-panel { transition: none; }
+}
+
+/* ── Help ─────────────────────────────────────────────────────── */
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.help-button {
+  width: 22px;
+  height: 22px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: #00ffff;
+  background: rgba(0, 255, 255, 0.06);
+  border: 1px solid rgba(0, 255, 255, 0.35);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.help-button:hover {
+  background: rgba(0, 255, 255, 0.15);
+}
+
+.help-dialog {
+  margin: auto;
+  max-width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+  padding: 0;
+  color: #d8dcf0;
+  background: rgba(10, 10, 30, 0.97);
+  border: 1px solid rgba(0, 255, 255, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.help-dialog::backdrop {
+  background: rgba(2, 2, 10, 0.6);
+}
+
+.help-body {
+  padding: 22px 26px 20px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.help-body h2 {
+  margin-bottom: 8px;
+  outline: none;
+  font-size: 16px;
+  font-weight: 300;
+  letter-spacing: 5px;
+  text-transform: uppercase;
+  color: #00ffff;
+}
+
+.help-body h3 {
+  margin: 16px 0 6px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #9a9ab8;
+}
+
+.help-body ol {
+  padding-left: 18px;
+}
+
+.help-body li + li {
+  margin-top: 4px;
+}
+
+.help-body b {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.help-lead {
+  color: #c4c8e4;
+}
+
+.help-keys td {
+  padding: 2px 12px 2px 0;
+  vertical-align: top;
+}
+
+.help-keys kbd {
+  display: inline-block;
+  min-width: 44px;
+  padding: 1px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: center;
+  color: #00ffff;
+  border: 1px solid rgba(0, 255, 255, 0.35);
+  border-radius: 3px;
+}
+
+.help-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 4px;
+}
+
+.help-links a {
+  color: #7fdfff;
+}
+
+.help-close {
+  margin-top: 18px;
 }

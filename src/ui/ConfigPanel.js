@@ -7,6 +7,7 @@ import { HarmonicOrbitPanel } from './HarmonicOrbitPanel.js';
 import { RecordPanel } from './RecordPanel.js';
 import { Presets } from './Presets.js';
 import { showToast } from './toast.js';
+import { openHelp } from './HelpOverlay.js';
 import { rangeRow, toggleRow } from './controls.js';
 import { MAX_ORBITS } from '../core/presetSchema.js';
 
@@ -62,11 +63,19 @@ export class ConfigPanel {
   _build(open = null) {
     this.container.innerHTML = '';
 
-    // Panel title
+    // Panel title, with the help button
     const title = document.createElement('div');
     title.className = 'panel-title';
-    title.textContent = 'soundSpace';
-    this._titleRow = title;
+    const name = document.createElement('span');
+    name.textContent = 'soundSpace';
+    const help = document.createElement('button');
+    help.className = 'help-button';
+    help.textContent = '?';
+    help.title = 'Help and shortcuts (?)';
+    help.setAttribute('aria-label', 'Help and shortcuts');
+    help.addEventListener('click', () => openHelp());
+    title.appendChild(name);
+    title.appendChild(help);
     this.container.appendChild(title);
 
     // Transport controls

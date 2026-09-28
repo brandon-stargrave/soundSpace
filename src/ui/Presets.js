@@ -1,4 +1,5 @@
 import { showToast } from './toast.js';
+import { makeShareLink } from './ShareLink.js';
 
 // Presets are small; anything this large isn't one
 const MAX_PRESET_BYTES = 1024 * 1024;
@@ -61,6 +62,16 @@ export class Presets {
     btnRow.appendChild(demoBtn);
     body.appendChild(btnRow);
 
+    const shareRow = document.createElement('div');
+    shareRow.className = 'btn-row';
+    const shareBtn = document.createElement('button');
+    shareBtn.className = 'btn';
+    shareBtn.textContent = 'Copy link';
+    shareBtn.title = 'Copy a link that opens this setup (MIDI and OSC settings stay private)';
+    shareBtn.addEventListener('click', () => this._copyLink());
+    shareRow.appendChild(shareBtn);
+    body.appendChild(shareRow);
+
     // Hidden file input for loading
     this._fileInput = document.createElement('input');
     this._fileInput.type = 'file';
@@ -94,6 +105,25 @@ export class Presets {
 
   _load() {
     this._fileInput.click();
+  }
+
+  /** Copy a link to this setup. MIDI/OSC settings are left out: they're about the sharer's own gear. */
+  async _copyLink() {
+    let url;
+    try {
+      url = await makeShareLink(this.engine.serialize({ includeIO: false }));
+    } catch (err) {
+      console.error('Could not make a share link:', err);
+      showToast('Could not make a link for this setup.', { kind: 'error' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Link copied. Anyone who opens it gets this setup.', { duration: 4000 });
+    } catch {
+      // Clipboard access can be refused; show the link so it can be copied by hand
+      window.prompt('Copy this link:', url);
+    }
   }
 
   async _handleFileLoad(event) {

@@ -1,6 +1,9 @@
 import { Engine } from './core/Engine.js';
 import { OrbitalNodes } from './generators/OrbitalNodes.js';
 import { ConfigPanel } from './ui/ConfigPanel.js';
+import { toggleHelp, showHelpOnFirstVisit } from './ui/HelpOverlay.js';
+import { hasSharedSetup, readSharedSetup, clearSharedSetupFromUrl } from './ui/ShareLink.js';
+import { showToast } from './ui/toast.js';
 
 // ── Loader state + helpers ──────────────────────────────────────────
 // The HTML overlay starts in `.loading` state (ring + progress bar). After
@@ -134,9 +137,29 @@ async function startApp() {
   engine.start();
   wireSceneControls();
 
+  // A shared link opens its setup; first-time visitors otherwise get the help
+  if (hasSharedSetup()) {
+    openSharedSetup();
+  } else {
+    showHelpOnFirstVisit();
+  }
+
   setTimeout(() => {
     overlay.style.display = 'none';
   }, 600);
+}
+
+/** Load the setup from a share link (validated like any preset; MIDI/OSC settings are never taken from links). */
+async function openSharedSetup() {
+  try {
+    const data = await readSharedSetup();
+    delete data.io;
+    const loaded = await configPanel.presets.apply(data, 'the shared setup');
+    if (loaded) clearSharedSetupFromUrl();
+  } catch (err) {
+    showToast(err.message, { kind: 'error', duration: 8000 });
+    clearSharedSetupFromUrl();
+  }
 }
 
 /** True when a key press belongs to the focused control rather than to a shortcut. */
@@ -149,11 +172,12 @@ function isTextEntry(target) {
 function wireSceneControls() {
   const homeBtn = document.getElementById('home-button');
   const orbitBtn = document.getElementById('orbit-button');
+  const orbitControl = document.getElementById('orbit-control');
   const fsBtn = document.getElementById('fullscreen-button');
   // iPhone Safari has no element fullscreen
   const canFullscreen = !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
   homeBtn.classList.add('visible');
-  orbitBtn.classList.add('visible');
+  orbitControl.classList.add('visible');
   if (canFullscreen) fsBtn.classList.add('visible');
 
   function toggleFullscreen() {
@@ -186,24 +210,19 @@ function wireSceneControls() {
   homeBtn.addEventListener('click', resetCamera);
   orbitBtn.addEventListener('click', toggleOrbit);
 
-  // Hover-popover speed slider on the orbit button. Lives inside the button
-  // so :hover stays active when moving the cursor up onto the slider, and
-  // pointer events on the slider are stopped from re-toggling orbit mode.
+  // Orbit speed popover: a sibling of the orbit button in a shared wrapper,
+  // shown while either is hovered or focused
   const orbitSpeedPopover = document.createElement('div');
   orbitSpeedPopover.className = 'orbit-speed-popover';
   orbitSpeedPopover.innerHTML =
-    '<span class="orbit-speed-label">Speed</span>' +
-    '<input type="range" min="0.02" max="0.6" step="0.01" />';
+    '<label class="orbit-speed-label" for="orbit-speed">Speed</label>' +
+    '<input id="orbit-speed" type="range" min="0.02" max="0.6" step="0.01" />';
   const orbitSpeedSlider = orbitSpeedPopover.querySelector('input');
   orbitSpeedSlider.value = String(engine.sceneManager._orbitSpeed ?? 0.12);
   orbitSpeedSlider.addEventListener('input', () => {
     engine.sceneManager.setOrbitSpeed(parseFloat(orbitSpeedSlider.value));
   });
-  // Don't let slider interactions bubble up and toggle the orbit button
-  ['click', 'pointerdown', 'mousedown'].forEach(ev => {
-    orbitSpeedPopover.addEventListener(ev, e => e.stopPropagation());
-  });
-  orbitBtn.appendChild(orbitSpeedPopover);
+  orbitControl.appendChild(orbitSpeedPopover);
 
   // Deactivate orbit button style when orbit mode is interrupted
   engine.sceneManager.renderer.domElement.addEventListener('pointerdown', () => {
@@ -245,13 +264,16 @@ function wireSceneControls() {
       case 'm': case 'M':
         configPanel.toggleMute();
         break;
+      case '?':
+        toggleHelp();
+        break;
     }
   });
 
   // Auto-hide UI + cursor in fullscreen when sidebar collapsed + idle
   let _hideTimer = null;
   const _hideDelay = 3000;
-  const _hideTargets = [homeBtn, orbitBtn, fsBtn];
+  const _hideTargets = [homeBtn, orbitControl, fsBtn];
 
   function showUI() {
     document.body.classList.remove('ui-hidden');

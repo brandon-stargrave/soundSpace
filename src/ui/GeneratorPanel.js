@@ -45,9 +45,13 @@ export class GeneratorPanel {
       this.controlsContainer.appendChild(divider(group.label));
       for (const param of items) {
         const row = this._createControl(param, gen);
-        if (row) this.controlsContainer.appendChild(row);
+        if (!row) continue;
+        this.controlsContainer.appendChild(row);
+        // A rebuild after a plugin change returns focus to the control that caused it
+        if (param.key === this._refocusKey) row.input?.focus();
       }
     }
+    this._refocusKey = null;
   }
 
   /** Apply a value, coalescing geometry rebuilds to one per animation frame. */
@@ -90,7 +94,10 @@ export class GeneratorPanel {
           onChange: (v) => {
             gen.setParam(param.key, v);
             // Show or hide the plugin's own controls (and Node Speed's disabled state)
-            if (PLUGIN_KEYS.has(param.key)) requestAnimationFrame(() => this._buildControls());
+            if (PLUGIN_KEYS.has(param.key)) {
+              this._refocusKey = param.key;
+              requestAnimationFrame(() => this._buildControls());
+            }
           },
         });
       case 'toggle':
